@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         chạch maze 1.0
 // @namespace    https://hoathinh3d.*/
-// @version      1.0
+// @version      1.0.0
 // @description  Tự động xử lý Mê Cung: kiểm tra Auto, bắt đầu trận, xác nhận, bật Auto Tấn Công, mở rương khi sẵn sàng và quay về sảnh.
 // @include https://hoathinh3d.*/me-cung
 // @grant        none
@@ -209,8 +209,15 @@
     }
 
     function runStateMachine() {
+        const previousState = lastState;
         const state = getState();
         announceState(state);
+
+        // Reset cycle flags khi vào lại phòng chờ từ một state khác
+        // => cho phép start button bấm lại ở vòng mới.
+        if (state === 'waiting-room' && previousState !== 'waiting-room') {
+            resetCycleFlags();
+        }
 
         switch (state) {
             case 'waiting-room':
@@ -237,11 +244,6 @@
             default:
                 // Sảnh chính để thủ công.
                 break;
-        }
-
-        // Khi game đã quay lại phòng chờ sau reward/reload, cycle flags sẽ được dùng lại.
-        if (state === 'waiting-room' && lastState === 'reward') {
-            resetCycleFlags();
         }
     }
 
