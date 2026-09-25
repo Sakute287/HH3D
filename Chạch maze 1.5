@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name        Chạch maze 1.4
+// @name         Chạch maze 1.5
 // @namespace    https://hoathinh3d.*/
-// @version      1.4
-// @description  Tự động xử lý Mê Cung: đợi đủ 4 người, bật Auto, bắt đầu trận, xác nhận, bật Auto Tấn Công, mở rương, quay về sảnh.
+// @version      1.5
+// @description  Tự động xử lý Mê Cung: chọn số người bắt đầu, kiểm tra Auto, bắt đầu trận, xác nhận, bật Auto Tấn Công, mở rương khi sẵn sàng và quay về sảnh.
 // @include https://hoathinh3d.*/me-cung
 // @grant        none
 // ==/UserScript==
@@ -10,9 +10,11 @@
 (() => {
     'use strict';
 
-    const LOG = '[HH3D Mê Cung Auto 4P]';
-    const CHECK_INTERVAL = 250;
-    const ACTION_COOLDOWN = 750;
+    const LOG = '[HH3D Mê Cung Auto]';
+    const CHECK_INTERVAL = 300;
+    const ACTION_COOLDOWN = 700;
+    const REQUIRED_PLAYERS_KEY = 'hh3d_maze_required_players';
+    const DEFAULT_REQUIRED_PLAYERS = 5;
 
     const SELECTORS = {
         startButton: '#btn-start',
@@ -70,6 +72,7 @@
     let lastState = 'unknown';
     let observerScheduled = false;
     let lastPlayerCountLog = -1;
+    let requiredPlayers = Number(localStorage.getItem(REQUIRED_PLAYERS_KEY)) || DEFAULT_REQUIRED_PLAYERS;
 
     function isVisible(element) {
         if (!element) return false;
@@ -88,11 +91,11 @@
     }
 
     function clickOnce(selector, label) {
-        const el = document.querySelector(selector);
-        if (!isVisible(el)) return false;
+        const element = document.querySelector(selector);
+        if (!isVisible(element)) return false;
         if (!canAct()) return false;
 
-        el.click();
+        element.click();
         console.log(`${LOG} ${label}`);
         return true;
     }
@@ -105,7 +108,6 @@
     }
 
     function getVisibleRoomPlayerCount() {
-        // 1) Ưu tiên selector count dạng số
         for (const selector of ROOM_COUNT_SELECTORS) {
             const el = document.querySelector(selector);
             if (!el || !isVisible(el)) continue;
@@ -114,42 +116,83 @@
             if (!Number.isNaN(n)) return n;
         }
 
-        // 2) Nếu không có số count, thử đếm phần tử trong room
-        let maxCount = 0;
+        let count = 0;
         for (const selector of ROOM_PLAYER_SELECTORS) {
             const nodes = [...document.querySelectorAll(selector)];
             const visibleCount = nodes.filter(el => isVisible(el)).length;
-            if (visibleCount > maxCount) maxCount = visibleCount;
+            if (visibleCount > count) count = visibleCount;
         }
 
-        // 3) Một số game hiển thị "đã có 1/4" dạng text
+        if (count > 0) return count;
+
         const textNodes = document.querySelectorAll(
             '.room-member-count, .member-count, .player-count, .room-count, .room-user-count, .player-status'
         );
+
         for (const node of textNodes) {
             if (!isVisible(node)) continue;
             const n = getTextNumber(node.textContent || node.innerText);
-            if (!Number.isNaN(n)) {
-                if (n > maxCount) maxCount = n;
-            }
+            if (!Number.isNaN(n)) return n;
         }
 
-        return maxCount;
+        return 0;
     }
 
-    function hasEnoughPlayers() {
-        const count = getVisibleRoomPlayerCount();
+    function ensureConfigUI() {
+        if (document.getElementById('hh3d-maze-config-panel')) return;
 
-        // Nếu count rõ ràng
-        if (!Number.isNaN(count) && count > 0) {
-            return count >= 4;
+        const panel = document.createElement('div');
+        panel.id = 'hh3d-maze-config-panel';
+        panel.style.position = 'fixed';
+        panel.style.right = '18px';
+        panel.style.top = '18px';
+        panel.style.zIndex = '999999';
+        panel.style.background = 'rgba(12, 16, 22, 0.88)';
+        panel.style.border = '1px solid rgba(255,255,255,0.15)';
+        panel.style.borderRadius = '10px';
+        panel.style.padding = '10px 12px';
+        panel.style.color = '#fff';
+        panel.style.fontSize = '13px';
+        panel.style.fontFamily = 'Arial, sans-serif';
+        panel.style.boxShadow = '0 8px 25px rgba(0,0,0,0.28)';
+        panel.style.display = 'flex';
+        panel.style.alignItems = 'center';
+        panel.style.gap = '8px';
+
+        const label = document.createElement('label');
+        label.textContent = 'Số người bắt đầu:';
+        label.style.color = '#f2f2f2';
+        label.style.fontWeight = '600';
+
+        const select = document.createElement('select');
+        select.style.padding = '4px 8px';
+        select.style.borderRadius = '6px';
+        select.style.border = '1px solid rgba(255,255,255,0.2)';
+        select.style.background = '#1b2430';
+        select.style.color = '#fff';
+        select.style.minWidth = '60px';
+
+        for (let i = 1; i <= 5; i++) {
+            const option = document.createElement('option');
+            option.value = String(i);
+            option.textContent = String(i);
+            if (i === requiredPlayers) option.selected = true;
+            select.appendChild(option);
         }
 
-        // Nếu không đọc được count, nhưng phòng chờ đang có start button và các room autostart ready
-        // thì cố gắng không bắt đầu quá sớm. Ở chế độ an toàn, hãy chờ 4 người bằng cách
-        // dùng selector room count nếu có trong DOM; nếu không có, không khởi động quá sớm.
-        const startBtn = document.querySelector(SELECTORS.startButton);
-        return !!startBtn && isVisible(startBtn) && false;
+        select.addEventListener('change', () => {
+            const value = Number(select.value);
+            if (!Number.isNaN(value) && value >= 1 && value <= 5) {
+                requiredPlayers = value;
+                localStorage.setItem(REQUIRED_PLAYERS_KEY, String(requiredPlayers));
+                startedCurrentCycle = false;
+                console.log(`${LOG} 🧩 Đã đổi số người bắt đầu thành: ${requiredPlayers}`);
+            }
+        });
+
+        panel.appendChild(label);
+        panel.appendChild(select);
+        document.body.appendChild(panel);
     }
 
     function trackIsOn(trackSelector) {
@@ -185,11 +228,7 @@
 
         const start = document.querySelector(SELECTORS.startButton);
         const readyTrack = document.querySelector(SELECTORS.autoReadyTrack);
-        const roomPlayerCount = getVisibleRoomPlayerCount();
-
-        if (isVisible(start) || isVisible(readyTrack) || roomPlayerCount > 0) {
-            return 'waiting-room';
-        }
+        if (isVisible(start) || isVisible(readyTrack)) return 'waiting-room';
 
         return 'lobby';
     }
@@ -209,17 +248,30 @@
     }
 
     function handleWaitingRoom() {
-        // 1) Bật các auto ở phòng chờ
-        ensureToggle(SELECTORS.autoReadyTrack, SELECTORS.autoReadyToggle, 'Tự động sẵn sàng');
-        ensureToggle(SELECTORS.autoNextStageTrack, SELECTORS.autoNextStageToggle, 'Tự động chuyển ải');
-        ensureToggle(SELECTORS.autoOpenChestTrack, SELECTORS.autoOpenChestToggle, 'Tự động mở rương');
+        ensureToggle(
+            SELECTORS.autoReadyTrack,
+            SELECTORS.autoReadyToggle,
+            'Tự động sẵn sàng'
+        );
+
+        ensureToggle(
+            SELECTORS.autoNextStageTrack,
+            SELECTORS.autoNextStageToggle,
+            'Tự động chuyển ải'
+        );
+
+        ensureToggle(
+            SELECTORS.autoOpenChestTrack,
+            SELECTORS.autoOpenChestToggle,
+            'Tự động mở rương'
+        );
 
         const startBtn = document.querySelector(SELECTORS.startButton);
         const playerCount = getVisibleRoomPlayerCount();
 
-        if (playerCount > 0 && playerCount < 4) {
+        if (playerCount > 0 && playerCount < requiredPlayers) {
             if (playerCount !== lastPlayerCountLog) {
-                console.log(`${LOG} ⏳ Đợi đủ người: ${playerCount}/4`);
+                console.log(`${LOG} ⏳ Đợi đủ người: ${playerCount}/${requiredPlayers}`);
                 lastPlayerCountLog = playerCount;
             }
             return;
@@ -227,9 +279,8 @@
 
         lastPlayerCountLog = playerCount;
 
-        // 2) Chỉ đánh start khi đủ người và chưa start cycle này
-        if (!startedCurrentCycle && isVisible(startBtn) && !startBtn.disabled && hasEnoughPlayers()) {
-            if (clickOnce(SELECTORS.startButton, '▶️ Đã bấm BẮT ĐẦU')) {
+        if (!startedCurrentCycle && isVisible(startBtn) && !startBtn.disabled && playerCount >= requiredPlayers) {
+            if (clickOnce(SELECTORS.startButton, `▶️ Đã bấm BẮT ĐẦU (${requiredPlayers} người)`)) {
                 startedCurrentCycle = true;
                 confirmHandled = false;
             }
@@ -238,6 +289,7 @@
 
     function handleConfirm() {
         if (confirmHandled) return;
+
         if (clickOnce(SELECTORS.confirmButton, '✅ Đã bấm XÁC NHẬN')) {
             confirmHandled = true;
         }
@@ -252,7 +304,7 @@
         if (!isVisible(track) || !isVisible(toggle)) return;
 
         if (track.classList.contains('on')) {
-            console.log(`${LOG} 🤖 Auto Tấn Công đã ON sẵn.`);
+            console.log(`${LOG} 🤖 TỰ ĐỘNG TẤN CÔNG đã ON sẵn.`);
             battleAutoHandled = true;
             return;
         }
@@ -297,7 +349,6 @@
         const state = getState();
         announceState(state);
 
-        // Reset cycle khi vào lại phòng chờ / khởi động lại từ reward hoặc lobby
         if (state === 'waiting-room' && previousState !== 'waiting-room') {
             resetCycleFlags();
         }
@@ -344,7 +395,9 @@
     }
 
     function start() {
-        console.log(`${LOG} 🚀 Khởi động bot mê cung 4 người.`);
+        console.log(`${LOG} 🚀 Đã khởi động.`);
+        ensureConfigUI();
+
         const observer = new MutationObserver(() => {
             scheduleRun();
         });
