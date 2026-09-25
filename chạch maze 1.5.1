@@ -2,8 +2,10 @@
 // @name         Chạch maze 1.5.1
 // @namespace    https://hoathinh3d.*/
 // @version      1.5.1
+// @updateURL    https://github.com/Sakute287/HH3D/edit/main/chạch
+// @downloadURL  https://github.com/Sakute287/HH3D/edit/main/chạch
 // @description  Tự động xử lý Mê Cung: chọn số người bắt đầu, kiểm tra Auto, bắt đầu trận, xác nhận, bật Auto Tấn Công, mở rương khi sẵn sàng và quay về sảnh
-// @include https://hoathinh3d.*/me-cung
+// @include      *://hoathinh3d.*/me-cung
 // @grant        none
 // ==/UserScript==
 
@@ -21,7 +23,7 @@
 
     const DEFAULT_SETTINGS = {
         requiredPlayers: 5,
-        autoKickIdle: false,
+        autoKickIdle: true,
         idleKickSeconds: 5,
         enabled: true
     };
@@ -234,93 +236,128 @@
         console.log(`${LOG} 📍 State: ${state}`);
     }
 
-    function findKickButtonsForRow(row) {
-        const candidateSelectors = [
-            '.kick-btn',
-            '.btn-kick',
-            '.kick-player',
-            '.member-kick',
-            '.player-kick',
-            '.remove-user',
-            '.btn-remove',
-            '.icon-kick',
-            '[data-action="kick"]',
-            '[data-role="kick"]',
-            '[title*="kick"]',
-            '[title*="Kick"]',
-            '.btn-delete'
-        ];
+    function normalizeText(value) {
+    return String(value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim();
+}
 
-        const direct = [];
-        for (const sel of candidateSelectors) {
-            const coll = row.querySelectorAll(sel);
-            for (const el of coll) {
-                if (isVisible(el)) direct.push(el);
+function findKickButtonsForRow(row) {
+    const candidateSelectors = [
+        '.kick-btn',
+        '.btn-kick',
+        '.kick-player',
+        '.member-kick',
+        '.player-kick',
+        '.remove-user',
+        '.btn-remove',
+        '.icon-kick',
+        '[data-action="kick"]',
+        '[data-role="kick"]',
+        '[title*="kick" i]',
+        '[title*="trục xuất" i]',
+        '[title*="truc xuat" i]',
+        '.btn-delete',
+        'button',
+        'a',
+        '[role="button"]'
+    ];
+
+    const buttons = [];
+
+    for (const selector of candidateSelectors) {
+        for (const element of row.querySelectorAll(selector)) {
+            if (!isVisible(element)) continue;
+
+            const text = normalizeText(
+                `${element.textContent || ''} ${element.getAttribute('title') || ''} ${element.getAttribute('aria-label') || ''}`
+            );
+
+            const isKickButton =
+                text.includes('truc xuat') ||
+                text.includes('kick') ||
+                text.includes('remove') ||
+                text.includes('loai');
+
+            if (isKickButton && !buttons.includes(element)) {
+                buttons.push(element);
             }
         }
-
-        if (direct.length) return direct;
-
-        for (const sel of candidateSelectors) {
-            const el = document.querySelector(sel);
-            if (el && isVisible(el)) direct.push(el);
-        }
-
-        return direct;
     }
 
-    function handleIdleKick() {
-        if (!scriptEnabled || !settings.autoKickIdle) return;
+    return buttons;
+}
 
-        const waitTextMatchers = [
-            /đợi/i,
-            /waiting/i,
-            /idle/i,
-            /chưa sẵn/i,
-            /not ready/i,
-            /not-ready/i,
-            /đang chờ/i
-        ];
+function handleIdleKick() {
+    if (!scriptEnabled || !settings.autoKickIdle) return;
 
-        const members = [
-            ...document.querySelectorAll(
-                '.room-member, .member-item, .player-item, .room-user, .user-item, .lobby-player, .player-card, .char-card, .member, .room-players .item, .players .item, .player-list .item, .member-list .member, .user-list .user'
-            )
-        ];
+    const waitTextMatchers = [
+        /chua/i,
+        /chưa/i,
+        /cho san sang/i,
+        /chờ sẵn sàng/i,
+        /not ready/i,
+        /waiting/i,
+        /idle/i,
+        /dang cho/i,
+        /đang chờ/i
+    ];
 
-        for (const row of members) {
-            if (!isVisible(row)) continue;
+    const members = [
+        ...document.querySelectorAll(
+            '.room-member, .member-item, .player-item, .room-user, .user-item, ' +
+            '.lobby-player, .player-card, .char-card, .member, ' +
+            '.room-players .item, .players .item, .player-list .item, ' +
+            '.member-list .member, .user-list .user'
+        )
+    ];
 
-            const text = (row.textContent || '').toLowerCase();
-            const isWaiter = waitTextMatchers.some(re => re.test(text));
-            if (!isWaiter) continue;
+    for (const row of members) {
+        if (!isVisible(row)) continue;
 
-            const now = Date.now();
-            if (!idleKickTracker.has(row)) {
-                idleKickTracker.set(row, now);
-                continue;
-            }
+        const rowText = row.textContent || '';
+        const isWaiting = waitTextMatchers.some(pattern => pattern.test(rowText));
 
-            const startedAt = idleKickTracker.get(row);
-            const elapsed = (now - startedAt) / 1000;
-
-            if (elapsed < settings.idleKickSeconds) continue;
-
-            const kickBtns = findKickButtonsForRow(row);
-            if (!kickBtns.length) continue;
-
-            const btn = kickBtns[0];
-            if (!isVisible(btn)) continue;
-
-            if (!canAct()) continue;
-
-            btn.click();
-            console.log(`${LOG} 🧹 Đã trục xuất người chưa sẵn sàng sau ${settings.idleKickSeconds}s`);
+        // Nếu người chơi đã sẵn sàng thì xóa bộ đếm cũ
+        if (!isWaiting) {
             idleKickTracker.delete(row);
+            continue;
         }
-    }
 
-    const PANEL_ICON_URL = 'https://github.com/Sakute287/HH3D/blob/main/bunny.jpg'; // <- thay bằng URL ảnh của bạn
+        const now = Date.now();
+
+        if (!idleKickTracker.has(row)) {
+            idleKickTracker.set(row, now);
+            console.log(
+                `${LOG} ⏳ Phát hiện người chưa sẵn sàng, bắt đầu đếm ${settings.idleKickSeconds}s`
+            );
+            continue;
+        }
+
+        const startedAt = idleKickTracker.get(row);
+        const elapsed = (now - startedAt) / 1000;
+
+        if (elapsed < settings.idleKickSeconds) continue;
+
+        const kickButtons = findKickButtonsForRow(row);
+        const kickButton = kickButtons[0];
+
+        if (!kickButton || !isVisible(kickButton)) continue;
+        if (!canAct()) continue;
+
+        kickButton.click();
+
+        console.log(
+            `${LOG} 🧹 Đã tự động trục xuất người chưa sẵn sàng sau ${settings.idleKickSeconds}s`
+        );
+
+        idleKickTracker.delete(row);
+    }
+}
+
+   const PANEL_ICON_URL = 'https://github.com/Sakute287/HH3D/blob/main/bunny.jpg'; // <- thay bằng URL ảnh của bạn
 
 function ensureConfigUI() {
     if (document.getElementById('hh3d-maze-config-panel')) return;
@@ -353,7 +390,7 @@ function ensureConfigUI() {
     headerRow.style.marginBottom = '8px';
 
     const title = document.createElement('div');
-    title.textContent = 'Ngồi IM teo lại';
+    title.textContent = 'Sakute';
     title.style.fontWeight = '700';
     title.style.fontSize = '14px';
     title.style.color = '#f8d9ae';
@@ -465,7 +502,7 @@ function ensureConfigUI() {
     rowKick.style.padding = '4px 0';
 
     const labelKick = document.createElement('label');
-    labelKick.textContent = 'Trực xuất người chờ sẵn sàng';
+    labelKick.textContent = 'Trục xuất người chưa sẵn sàng';
     labelKick.style.color = '#f0f0f0';
     labelKick.style.fontWeight = '600';
 
@@ -720,3 +757,4 @@ function ensureConfigUI() {
         start();
     }
 })();
+
