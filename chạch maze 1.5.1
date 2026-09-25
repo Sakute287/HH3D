@@ -1,0 +1,682 @@
+// ==UserScript==
+// @name         Chạch maze 1.5.1
+// @namespace    https://hoathinh3d.*/
+// @version      1.5.1
+// @description  Tự động xử lý Mê Cung: chọn số người bắt đầu, kiểm tra Auto, bắt đầu trận, xác nhận, bật Auto Tấn Công, mở rương khi sẵn sàng và quay về sảnh
+// @include https://hoathinh3d.*/me-cung
+// @grant        none
+// ==/UserScript==
+
+(() => {
+    'use strict';
+
+    const LOG = '[HH3D Mê Cung Auto]';
+    const CHECK_INTERVAL = 300;
+    const ACTION_COOLDOWN = 700;
+
+    const STORAGE_KEYS = {
+        requiredPlayers: 'hh3d_maze_required_players',
+        config: 'hh3d_maze_config_v2',
+    };
+
+    const DEFAULT_SETTINGS = {
+        requiredPlayers: 5,
+        autoKickIdle: false,
+        idleKickSeconds: 5,
+        enabled: true
+    };
+
+    const SELECTORS = {
+        startButton: '#btn-start',
+        confirmButton: '.confirm-btn-ok',
+        battleFrame: '#battle-frame',
+        autoAttackTrack: '#auto-attack-track',
+        autoAttackToggle: '#auto-attack-toggle',
+        autoReadyTrack: '#auto-ready-track',
+        autoReadyToggle: '#auto-ready-row button',
+        autoNextStageTrack: '#auto-next-stage-track',
+        autoNextStageToggle: '#auto-next-stage-row button',
+        autoOpenChestTrack: '#auto-open-chest-track',
+        autoOpenChestToggle: '#auto-open-chest-row button',
+        chestInplace: '#b5-chest-inplace',
+        chestCountdown: '#b5-chest-countdown',
+        chestWrap: '#b5-chest-wrap',
+        rewardBox: '.reward-box',
+        backLobbyButton: '.reward-box .btn-back-lobby'
+    };
+
+    const ROOM_PLAYER_SELECTORS = [
+        '.room-member',
+        '.member-item',
+        '.player-item',
+        '.room-user',
+        '.user-item',
+        '.lobby-player',
+        '.player-card',
+        '.char-card',
+        '.member',
+        '.room-players .item',
+        '.players .item',
+        '.player-list .item',
+        '.member-list .member',
+        '.user-list .user'
+    ];
+
+    const ROOM_COUNT_SELECTORS = [
+        '#room-player-count',
+        '#player-count',
+        '.room-player-count',
+        '.player-count',
+        '.room-member-count',
+        '.member-count',
+        '.room-count',
+        '.room-user-count'
+    ];
+
+    let settings = { ...DEFAULT_SETTINGS };
+    try {
+        const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.config) || '{}');
+        settings = { ...DEFAULT_SETTINGS, ...saved };
+        settings.requiredPlayers = clampInt(settings.requiredPlayers, 1, 5, DEFAULT_SETTINGS.requiredPlayers);
+        settings.idleKickSeconds = clampInt(settings.idleKickSeconds, 1, 60, DEFAULT_SETTINGS.idleKickSeconds);
+        settings.enabled = !!settings.enabled;
+        settings.autoKickIdle = !!settings.autoKickIdle;
+    } catch (e) {
+        console.warn(`${LOG} ⚠️ Không đọc được config cũ, dùng mặc định.`);
+    }
+
+    if (!Number.isFinite(Number(localStorage.getItem(STORAGE_KEYS.requiredPlayers)))) {
+        localStorage.setItem(STORAGE_KEYS.requiredPlayers, String(settings.requiredPlayers));
+    }
+
+    let lastActionAt = 0;
+    let startedCurrentCycle = false;
+    let confirmHandled = false;
+    let battleAutoHandled = false;
+    let chestHandled = false;
+    let rewardHandled = false;
+    let lastState = 'unknown';
+    let observerScheduled = false;
+    let lastPlayerCountLog = -1;
+    let scriptEnabled = settings.enabled;
+
+    const idleKickTracker = new WeakMap();
+
+    function clampInt(value, min, max, fallback) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return fallback;
+        return Math.min(Math.max(Math.round(n), min), max);
+    }
+
+    function saveSettings() {
+        localStorage.setItem(STORAGE_KEYS.config, JSON.stringify({
+            requiredPlayers: settings.requiredPlayers,
+            autoKickIdle: settings.autoKickIdle,
+            idleKickSeconds: settings.idleKickSeconds,
+            enabled: scriptEnabled
+        }));
+        localStorage.setItem(STORAGE_KEYS.requiredPlayers, String(settings.requiredPlayers));
+    }
+
+    function isVisible(element) {
+        if (!element) return false;
+        if (element.hidden) return false;
+        if (element.getClientRects && element.getClientRects().length === 0) return false;
+
+        const style = getComputedStyle(element);
+        return style.display !== 'none' && style.visibility !== 'hidden';
+    }
+
+    function canAct() {
+        const now = Date.now();
+        if (now - lastActionAt < ACTION_COOLDOWN) return false;
+        lastActionAt = now;
+        return true;
+    }
+
+    function clickOnce(selector, label) {
+        const element = document.querySelector(selector);
+        if (!isVisible(element)) return false;
+        if (!canAct()) return false;
+
+        element.click();
+        console.log(`${LOG} ${label}`);
+        return true;
+    }
+
+    function getTextNumber(value) {
+        if (value === null || value === undefined) return NaN;
+        const text = String(value).replace(/[^0-9]/g, '');
+        if (!text) return NaN;
+        return Number(text);
+    }
+
+    function getVisibleRoomPlayerCount() {
+        for (const selector of ROOM_COUNT_SELECTORS) {
+            const el = document.querySelector(selector);
+            if (!el || !isVisible(el)) continue;
+
+            const n = getTextNumber(el.textContent || el.value || el.innerText);
+            if (!Number.isNaN(n)) return n;
+        }
+
+        let count = 0;
+        for (const selector of ROOM_PLAYER_SELECTORS) {
+            const nodes = [...document.querySelectorAll(selector)];
+            const visibleCount = nodes.filter(el => isVisible(el)).length;
+            if (visibleCount > count) count = visibleCount;
+        }
+
+        if (count > 0) return count;
+
+        const textNodes = document.querySelectorAll(
+            '.room-member-count, .member-count, .player-count, .room-count, .room-user-count, .player-status'
+        );
+
+        for (const node of textNodes) {
+            if (!isVisible(node)) continue;
+            const n = getTextNumber(node.textContent || node.innerText);
+            if (!Number.isNaN(n)) return n;
+        }
+
+        return 0;
+    }
+
+    function trackIsOn(trackSelector) {
+        const track = document.querySelector(trackSelector);
+        return !!track && track.classList.contains('on');
+    }
+
+    function ensureToggle(trackSelector, buttonSelector, label) {
+        const track = document.querySelector(trackSelector);
+        const button = document.querySelector(buttonSelector);
+
+        if (!isVisible(track) || !isVisible(button)) return false;
+        if (track.classList.contains('on')) return false;
+        if (!canAct()) return false;
+
+        button.click();
+        console.log(`${LOG} 🤖 Đã bật ${label}`);
+        return true;
+    }
+
+    function getState() {
+        const rewardBox = document.querySelector(SELECTORS.rewardBox);
+        if (isVisible(rewardBox)) return 'reward';
+
+        const chest = document.querySelector(SELECTORS.chestInplace);
+        if (isVisible(chest)) return 'chest';
+
+        const battle = document.querySelector(SELECTORS.battleFrame);
+        if (isVisible(battle)) return 'battle';
+
+        const confirm = document.querySelector(SELECTORS.confirmButton);
+        if (isVisible(confirm)) return 'confirm';
+
+        const start = document.querySelector(SELECTORS.startButton);
+        const readyTrack = document.querySelector(SELECTORS.autoReadyTrack);
+        if (isVisible(start) || isVisible(readyTrack)) return 'waiting-room';
+
+        return 'lobby';
+    }
+
+    function resetCycleFlags() {
+        startedCurrentCycle = false;
+        confirmHandled = false;
+        battleAutoHandled = false;
+        chestHandled = false;
+        rewardHandled = false;
+    }
+
+    function announceState(state) {
+        if (state === lastState) return;
+        lastState = state;
+        console.log(`${LOG} 📍 State: ${state}`);
+    }
+
+    function findKickButtonsForRow(row) {
+        const candidateSelectors = [
+            '.kick-btn',
+            '.btn-kick',
+            '.kick-player',
+            '.member-kick',
+            '.player-kick',
+            '.remove-user',
+            '.btn-remove',
+            '.icon-kick',
+            '[data-action="kick"]',
+            '[data-role="kick"]',
+            '[title*="kick"]',
+            '[title*="Kick"]',
+            '.btn-delete'
+        ];
+
+        const direct = [];
+        for (const sel of candidateSelectors) {
+            const coll = row.querySelectorAll(sel);
+            for (const el of coll) {
+                if (isVisible(el)) direct.push(el);
+            }
+        }
+
+        if (direct.length) return direct;
+
+        for (const sel of candidateSelectors) {
+            const el = document.querySelector(sel);
+            if (el && isVisible(el)) direct.push(el);
+        }
+
+        return direct;
+    }
+
+    function handleIdleKick() {
+        if (!scriptEnabled || !settings.autoKickIdle) return;
+
+        const waitTextMatchers = [
+            /đợi/i,
+            /waiting/i,
+            /idle/i,
+            /chưa sẵn/i,
+            /not ready/i,
+            /not-ready/i,
+            /đang chờ/i
+        ];
+
+        const members = [
+            ...document.querySelectorAll(
+                '.room-member, .member-item, .player-item, .room-user, .user-item, .lobby-player, .player-card, .char-card, .member, .room-players .item, .players .item, .player-list .item, .member-list .member, .user-list .user'
+            )
+        ];
+
+        for (const row of members) {
+            if (!isVisible(row)) continue;
+
+            const text = (row.textContent || '').toLowerCase();
+            const isWaiter = waitTextMatchers.some(re => re.test(text));
+            if (!isWaiter) continue;
+
+            const now = Date.now();
+            if (!idleKickTracker.has(row)) {
+                idleKickTracker.set(row, now);
+                continue;
+            }
+
+            const startedAt = idleKickTracker.get(row);
+            const elapsed = (now - startedAt) / 1000;
+
+            if (elapsed < settings.idleKickSeconds) continue;
+
+            const kickBtns = findKickButtonsForRow(row);
+            if (!kickBtns.length) continue;
+
+            const btn = kickBtns[0];
+            if (!isVisible(btn)) continue;
+
+            if (!canAct()) continue;
+
+            btn.click();
+            console.log(`${LOG} 🧹 Đã trực xuất người chờ sẵn sàng sau ${settings.idleKickSeconds}s`);
+            idleKickTracker.delete(row);
+        }
+    }
+
+    function ensureConfigUI() {
+        if (document.getElementById('hh3d-maze-config-panel')) return;
+
+        const panel = document.createElement('div');
+        panel.id = 'hh3d-maze-config-panel';
+        panel.style.position = 'fixed';
+        panel.style.right = '18px';
+        panel.style.top = '18px';
+        panel.style.zIndex = '999999';
+        panel.style.width = '270px';
+        panel.style.background = 'linear-gradient(180deg, rgba(14,17,22,0.96), rgba(22,30,40,0.9))';
+        panel.style.border = '1px solid rgba(255,255,255,0.12)';
+        panel.style.borderRadius = '12px';
+        panel.style.padding = '10px 12px 12px';
+        panel.style.color = '#fff';
+        panel.style.fontSize = '13px';
+        panel.style.fontFamily = 'Arial, sans-serif';
+        panel.style.boxShadow = '0 8px 26px rgba(0,0,0,0.35)';
+        panel.style.backdropFilter = 'blur(6px)';
+
+        const headerRow = document.createElement('div');
+        headerRow.style.display = 'flex';
+        headerRow.style.alignItems = 'center';
+        headerRow.style.justifyContent = 'space-between';
+        headerRow.style.gap = '8px';
+        headerRow.style.marginBottom = '8px';
+
+        const title = document.createElement('div');
+        title.textContent = 'Ngồi IM teo lại';
+        title.style.fontWeight = '700';
+        title.style.fontSize = '14px';
+        title.style.color = '#f8d9ae';
+
+        const statusBtn = document.createElement('button');
+        statusBtn.type = 'button';
+        statusBtn.textContent = scriptEnabled ? 'DỪNG' : 'CHẠY';
+        statusBtn.style.border = 'none';
+        statusBtn.style.borderRadius = '8px';
+        statusBtn.style.padding = '8px 14px';
+        statusBtn.style.fontWeight = '700';
+        statusBtn.style.color = '#fff';
+        statusBtn.style.cursor = 'pointer';
+        statusBtn.style.background = scriptEnabled ? '#ff6e6e' : '#3ba55d';
+        statusBtn.style.boxShadow = '0 4px 10px rgba(0,0,0,0.2)';
+        statusBtn.addEventListener('click', () => {
+            scriptEnabled = !scriptEnabled;
+            saveSettings();
+            statusBtn.textContent = scriptEnabled ? 'DỪNG' : 'CHẠY';
+            statusBtn.style.background = scriptEnabled ? '#ff6e6e' : '#3ba55d';
+            console.log(`${LOG} ${scriptEnabled ? 'Bật' : 'Tắt'} tool`);
+        });
+
+        headerRow.appendChild(title);
+        headerRow.appendChild(statusBtn);
+
+        const settingsWrap = document.createElement('div');
+        settingsWrap.style.display = 'flex';
+        settingsWrap.style.flexDirection = 'column';
+        settingsWrap.style.gap = '10px';
+        settingsWrap.style.marginTop = '6px';
+
+        const rowRequired = document.createElement('div');
+        rowRequired.style.display = 'flex';
+        rowRequired.style.alignItems = 'center';
+        rowRequired.style.justifyContent = 'space-between';
+        rowRequired.style.gap = '8px';
+        rowRequired.style.padding = '4px 0';
+
+        const labelRequired = document.createElement('label');
+        labelRequired.textContent = 'Người tối thiểu để bắt đầu';
+        labelRequired.style.color = '#f0f0f0';
+        labelRequired.style.fontWeight = '600';
+
+        const selectRequired = document.createElement('select');
+        selectRequired.style.minWidth = '82px';
+        selectRequired.style.padding = '6px 8px';
+        selectRequired.style.borderRadius = '8px';
+        selectRequired.style.border = '1px solid rgba(255,255,255,0.15)';
+        selectRequired.style.background = '#1c2430';
+        selectRequired.style.color = '#fff';
+
+        for (let i = 1; i <= 5; i++) {
+            const opt = document.createElement('option');
+            opt.value = String(i);
+            opt.textContent = String(i);
+            if (i === settings.requiredPlayers) opt.selected = true;
+            selectRequired.appendChild(opt);
+        }
+
+        selectRequired.addEventListener('change', () => {
+            settings.requiredPlayers = clampInt(selectRequired.value, 1, 5, DEFAULT_SETTINGS.requiredPlayers);
+            saveSettings();
+            startedCurrentCycle = false;
+            console.log(`${LOG} 🧩 Đã đổi số người bắt đầu thành: ${settings.requiredPlayers}`);
+        });
+
+        rowRequired.appendChild(labelRequired);
+        rowRequired.appendChild(selectRequired);
+
+        const rowKick = document.createElement('div');
+        rowKick.style.display = 'flex';
+        rowKick.style.alignItems = 'center';
+        rowKick.style.justifyContent = 'space-between';
+        rowKick.style.gap = '8px';
+        rowKick.style.padding = '4px 0';
+
+        const labelKick = document.createElement('label');
+        labelKick.textContent = 'Trực xuất người chờ sẵn sàng';
+        labelKick.style.color = '#f0f0f0';
+        labelKick.style.fontWeight = '600';
+
+        const kickToggleWrap = document.createElement('div');
+        kickToggleWrap.style.display = 'flex';
+        kickToggleWrap.style.alignItems = 'center';
+        kickToggleWrap.style.gap = '6px';
+
+        const kickToggle = document.createElement('button');
+        kickToggle.type = 'button';
+        kickToggle.textContent = settings.autoKickIdle ? 'TẮT' : 'BẬT';
+        kickToggle.style.border = 'none';
+        kickToggle.style.borderRadius = '8px';
+        kickToggle.style.padding = '6px 10px';
+        kickToggle.style.background = settings.autoKickIdle ? '#ff9d2c' : '#4d5560';
+        kickToggle.style.color = '#fff';
+        kickToggle.style.cursor = 'pointer';
+        kickToggle.style.fontWeight = '700';
+
+        kickToggle.addEventListener('click', () => {
+            settings.autoKickIdle = !settings.autoKickIdle;
+            saveSettings();
+            kickToggle.textContent = settings.autoKickIdle ? 'TẮT' : 'BẬT';
+            kickToggle.style.background = settings.autoKickIdle ? '#ff9d2c' : '#4d5560';
+            console.log(`${LOG} 🧹 Auto kick người chờ: ${settings.autoKickIdle ? 'ON' : 'OFF'}`);
+        });
+
+        rowKick.appendChild(labelKick);
+        rowKick.appendChild(kickToggle);
+
+        const rowKickDelay = document.createElement('div');
+        rowKickDelay.style.display = 'flex';
+        rowKickDelay.style.alignItems = 'center';
+        rowKickDelay.style.justifyContent = 'space-between';
+        rowKickDelay.style.gap = '8px';
+        rowKickDelay.style.padding = '4px 0';
+
+        const labelDelay = document.createElement('label');
+        labelDelay.textContent = 'Thời gian chờ trực xuất';
+        labelDelay.style.color = '#f0f0f0';
+        labelDelay.style.fontWeight = '600';
+
+        const delayInput = document.createElement('input');
+        delayInput.type = 'number';
+        delayInput.min = '1';
+        delayInput.max = '60';
+        delayInput.value = String(settings.idleKickSeconds);
+        delayInput.style.width = '56px';
+        delayInput.style.padding = '6px 8px';
+        delayInput.style.borderRadius = '8px';
+        delayInput.style.border = '1px solid rgba(255,255,255,0.15)';
+        delayInput.style.background = '#1b2430';
+        delayInput.style.color = '#fff';
+        delayInput.style.textAlign = 'center';
+
+        delayInput.addEventListener('change', () => {
+            settings.idleKickSeconds = clampInt(delayInput.value, 1, 60, DEFAULT_SETTINGS.idleKickSeconds);
+            saveSettings();
+            console.log(`${LOG} ⏱️ Thời gian chờ trực xuất: ${settings.idleKickSeconds}s`);
+        });
+
+        rowKickDelay.appendChild(labelDelay);
+        rowKickDelay.appendChild(delayInput);
+
+        settingsWrap.appendChild(rowRequired);
+        settingsWrap.appendChild(rowKick);
+        settingsWrap.appendChild(rowKickDelay);
+
+        panel.appendChild(headerRow);
+        panel.appendChild(settingsWrap);
+        document.body.appendChild(panel);
+    }
+
+    function handleWaitingRoom() {
+        ensureToggle(
+            SELECTORS.autoReadyTrack,
+            SELECTORS.autoReadyToggle,
+            'Tự động sẵn sàng'
+        );
+
+        ensureToggle(
+            SELECTORS.autoNextStageTrack,
+            SELECTORS.autoNextStageToggle,
+            'Tự động chuyển ải'
+        );
+
+        ensureToggle(
+            SELECTORS.autoOpenChestTrack,
+            SELECTORS.autoOpenChestToggle,
+            'Tự động mở rương'
+        );
+
+        handleIdleKick();
+
+        const startBtn = document.querySelector(SELECTORS.startButton);
+        const playerCount = getVisibleRoomPlayerCount();
+
+        if (playerCount > 0 && playerCount < settings.requiredPlayers) {
+            if (playerCount !== lastPlayerCountLog) {
+                console.log(`${LOG} ⏳ Đợi đủ người: ${playerCount}/${settings.requiredPlayers}`);
+                lastPlayerCountLog = playerCount;
+            }
+            return;
+        }
+
+        lastPlayerCountLog = playerCount;
+
+        if (!startedCurrentCycle && isVisible(startBtn) && !startBtn.disabled && playerCount >= settings.requiredPlayers) {
+            if (clickOnce(SELECTORS.startButton, `▶️ Đã bấm BẮT ĐẦU (${settings.requiredPlayers} người)`)) {
+                startedCurrentCycle = true;
+                confirmHandled = false;
+            }
+        }
+    }
+
+    function handleConfirm() {
+        if (confirmHandled) return;
+
+        if (clickOnce(SELECTORS.confirmButton, '✅ Đã bấm XÁC NHẬN')) {
+            confirmHandled = true;
+        }
+    }
+
+    function handleBattle() {
+        if (battleAutoHandled) return;
+
+        const track = document.querySelector(SELECTORS.autoAttackTrack);
+        const toggle = document.querySelector(SELECTORS.autoAttackToggle);
+
+        if (!isVisible(track) || !isVisible(toggle)) return;
+
+        if (track.classList.contains('on')) {
+            console.log(`${LOG} 🤖 TỰ ĐỘNG TẤN CÔNG đã ON sẵn.`);
+            battleAutoHandled = true;
+            return;
+        }
+
+        if (clickOnce(SELECTORS.autoAttackToggle, '🤖 Đã bật TỰ ĐỘNG TẤN CÔNG')) {
+            battleAutoHandled = true;
+        }
+    }
+
+    function handleChest() {
+        if (chestHandled) return;
+
+        const chest = document.querySelector(SELECTORS.chestInplace);
+        const countdown = document.querySelector(SELECTORS.chestCountdown);
+        const chestWrap = document.querySelector(SELECTORS.chestWrap);
+
+        if (!isVisible(chest) || !isVisible(countdown) || !isVisible(chestWrap)) return;
+
+        const text = (countdown.textContent || '').trim();
+        if (text !== '✅ Rương đã sẵn sàng!') return;
+
+        if (clickOnce(SELECTORS.chestWrap, '🎁 Rương đã sẵn sàng → Đã click mở rương')) {
+            chestHandled = true;
+        }
+    }
+
+    function handleReward() {
+        if (rewardHandled) return;
+
+        const rewardBox = document.querySelector(SELECTORS.rewardBox);
+        const backButton = document.querySelector(SELECTORS.backLobbyButton);
+
+        if (!isVisible(rewardBox) || !isVisible(backButton)) return;
+
+        if (clickOnce(SELECTORS.backLobbyButton, '🏠 Đã bấm QUAY VỀ SẢNH → loop lại')) {
+            rewardHandled = true;
+        }
+    }
+
+    function runStateMachine() {
+        if (!scriptEnabled) return;
+
+        const previousState = lastState;
+        const state = getState();
+        announceState(state);
+
+        if (state === 'waiting-room' && previousState !== 'waiting-room') {
+            resetCycleFlags();
+        }
+
+        switch (state) {
+            case 'waiting-room':
+                handleWaitingRoom();
+                break;
+
+            case 'confirm':
+                handleConfirm();
+                break;
+
+            case 'battle':
+                handleBattle();
+                break;
+
+            case 'chest':
+                handleChest();
+                break;
+
+            case 'reward':
+                handleReward();
+                break;
+
+            case 'lobby':
+            default:
+                break;
+        }
+    }
+
+    function scheduleRun() {
+        if (observerScheduled) return;
+        observerScheduled = true;
+
+        setTimeout(() => {
+            observerScheduled = false;
+            try {
+                runStateMachine();
+            } catch (error) {
+                console.error(`${LOG} ❌ Lỗi state machine:`, error);
+            }
+        }, 40);
+    }
+
+    function start() {
+        console.log(`${LOG} 🚀 Đã khởi động.`);
+        ensureConfigUI();
+
+        const observer = new MutationObserver(() => {
+            scheduleRun();
+        });
+
+        observer.observe(document.documentElement || document, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            attributeFilter: ['class', 'style', 'hidden', 'disabled']
+        });
+
+        setInterval(() => {
+            if (scriptEnabled) runStateMachine();
+        }, CHECK_INTERVAL);
+
+        scheduleRun();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start, { once: true });
+    } else {
+        start();
+    }
+})();
