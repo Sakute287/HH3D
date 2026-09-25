@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         HH3D Mê Cung Auto 1
+// @name         chạch maze 1.0
 // @namespace    https://hoathinh3d.*/
-// @version      1.0.0
+// @version      1.0
 // @description  Tự động xử lý Mê Cung: kiểm tra Auto, bắt đầu trận, xác nhận, bật Auto Tấn Công, mở rương khi sẵn sàng và quay về sảnh.
 // @include https://hoathinh3d.*/me-cung
 // @grant        none
