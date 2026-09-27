@@ -731,6 +731,12 @@ function ensureConfigUI() {
 
     function start() {
         console.log(`${LOG} 🚀 Đã khởi động.`);
+        const RELOAD_INTERVAL = 15 * 60 * 1000; // 15 phút
+
+setTimeout(() => {
+    console.log(`${LOG} 🔄 Đã đủ 15 phút, tự động tải lại trang.`);
+    window.location.reload();
+}, RELOAD_INTERVAL);
         ensureConfigUI();
 
         const observer = new MutationObserver(() => {
