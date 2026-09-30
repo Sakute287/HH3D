@@ -1,16 +1,20 @@
 // ==UserScript==
 // @name         Chạch maze 1.5.1
-// @namespace    https://hoathinh3d.*/
+// @namespace    https://github.com/Sakute287/HH3D
 // @version      1.5.1
-// @updateURL    https://github.com/Sakute287/HH3D/edit/main/chạch maze 1.5.1.js
-// @downloadURL  https://github.com/Sakute287/HH3D/edit/main/chạch maze 1.5.1.js
-// @description  Tự động xử lý Mê Cung: chọn số người bắt đầu, kiểm tra Auto, bắt đầu trận, xác nhận, bật Auto Tấn Công, mở rương khi sẵn sàng và quay về sảnh
-// @include      *://hoathinh3d.*/me-cung
-// @grant        none
+// @match       *://*.hoathinh3d.*/me-cung*
+// @match       *://hoathinh3d.*/me-cung*
+// @downloadURL  https://raw.githubusercontent.com/Sakute287/HH3D/main/chạch maze 1.5.1.js
+// @updateURL   https://raw.githubusercontent.com/Sakute287/HH3D/main/chạch maze 1.5.1.js
+// @grant       none
+// @run-at      document-idle
 // ==/UserScript==
 
 (() => {
     'use strict';
+
+    if (window.__HH3D_MAZE_INSTALLED__) return;
+    window.__HH3D_MAZE_INSTALLED__ = true;
 
     const LOG = '[HH3D Mê Cung Auto]';
     const CHECK_INTERVAL = 300;
