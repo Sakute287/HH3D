@@ -2,8 +2,8 @@
 // @name         Chạch maze 1.5.1
 // @namespace    https://hoathinh3d.*/
 // @version      1.5.1
-// @updateURL    https://github.com/Sakute287/HH3D/edit/main/chạch
-// @downloadURL  https://github.com/Sakute287/HH3D/edit/main/chạch
+// @updateURL    https://github.com/Sakute287/HH3D/edit/main/chạch maze 1.5.1.js
+// @downloadURL  https://github.com/Sakute287/HH3D/edit/main/chạch maze 1.5.1.js
 // @description  Tự động xử lý Mê Cung: chọn số người bắt đầu, kiểm tra Auto, bắt đầu trận, xác nhận, bật Auto Tấn Công, mở rương khi sẵn sàng và quay về sảnh
 // @include      *://hoathinh3d.*/me-cung
 // @grant        none
