@@ -23,7 +23,8 @@
         requiredPlayers: 5,
         autoKickIdle: true,
         idleKickSeconds: 5,
-        enabled: true
+        enabled: true,
+        difficulty: 'Khó'
     };
 
     const SELECTORS = {
@@ -73,6 +74,8 @@
         '.room-user-count'
     ];
 
+    const DIFFICULTY_OPTIONS = ['Thường', 'Khó', 'Ác Mộng'];
+
     let settings = { ...DEFAULT_SETTINGS };
     try {
         const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.config) || '{}');
@@ -81,6 +84,9 @@
         settings.idleKickSeconds = clampInt(settings.idleKickSeconds, 1, 60, DEFAULT_SETTINGS.idleKickSeconds);
         settings.enabled = !!settings.enabled;
         settings.autoKickIdle = !!settings.autoKickIdle;
+        if (!DIFFICULTY_OPTIONS.includes(settings.difficulty)) {
+            settings.difficulty = DEFAULT_SETTINGS.difficulty;
+        }
     } catch (e) {
         console.warn(`${LOG} ⚠️ Không đọc được config cũ, dùng mặc định.`);
     }
@@ -113,7 +119,8 @@
             requiredPlayers: settings.requiredPlayers,
             autoKickIdle: settings.autoKickIdle,
             idleKickSeconds: settings.idleKickSeconds,
-            enabled: scriptEnabled
+            enabled: scriptEnabled,
+            difficulty: settings.difficulty
         }));
         localStorage.setItem(STORAGE_KEYS.requiredPlayers, String(settings.requiredPlayers));
     }
@@ -235,403 +242,415 @@
     }
 
     function normalizeText(value) {
-    return String(value || '')
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .toLowerCase()
-        .trim();
-}
+        return String(value || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .trim();
+    }
 
-function findKickButtonsForRow(row) {
-    const candidateSelectors = [
-        '.kick-btn',
-        '.btn-kick',
-        '.kick-player',
-        '.member-kick',
-        '.player-kick',
-        '.remove-user',
-        '.btn-remove',
-        '.icon-kick',
-        '[data-action="kick"]',
-        '[data-role="kick"]',
-        '[title*="kick" i]',
-        '[title*="trục xuất" i]',
-        '[title*="truc xuat" i]',
-        '.btn-delete',
-        'button',
-        'a',
-        '[role="button"]'
-    ];
+    function findKickButtonsForRow(row) {
+        const candidateSelectors = [
+            '.kick-btn',
+            '.btn-kick',
+            '.kick-player',
+            '.member-kick',
+            '.player-kick',
+            '.remove-user',
+            '.btn-remove',
+            '.icon-kick',
+            '[data-action="kick"]',
+            '[data-role="kick"]',
+            '[title*="kick" i]',
+            '[title*="trục xuất" i]',
+            '[title*="truc xuat" i]',
+            '.btn-delete',
+            'button',
+            'a',
+            '[role="button"]'
+        ];
 
-    const buttons = [];
+        const buttons = [];
 
-    for (const selector of candidateSelectors) {
-        for (const element of row.querySelectorAll(selector)) {
-            if (!isVisible(element)) continue;
+        for (const selector of candidateSelectors) {
+            for (const element of row.querySelectorAll(selector)) {
+                if (!isVisible(element)) continue;
 
-            const text = normalizeText(
-                `${element.textContent || ''} ${element.getAttribute('title') || ''} ${element.getAttribute('aria-label') || ''}`
-            );
+                const text = normalizeText(
+                    `${element.textContent || ''} ${element.getAttribute('title') || ''} ${element.getAttribute('aria-label') || ''}`
+                );
 
-            const isKickButton =
-                text.includes('truc xuat') ||
-                text.includes('kick') ||
-                text.includes('remove') ||
-                text.includes('loai');
+                const isKickButton =
+                    text.includes('truc xuat') ||
+                    text.includes('kick') ||
+                    text.includes('remove') ||
+                    text.includes('loai');
 
-            if (isKickButton && !buttons.includes(element)) {
-                buttons.push(element);
+                if (isKickButton && !buttons.includes(element)) {
+                    buttons.push(element);
+                }
             }
         }
+
+        return buttons;
     }
 
-    return buttons;
-}
+    function countUnreadyPlayers() {
+        const waitTextMatchers = [
+            /chua/i,
+            /chưa/i,
+            /cho san sang/i,
+            /chờ sẵn sàng/i,
+            /not ready/i,
+            /waiting/i,
+            /idle/i,
+            /dang cho/i,
+            /đang chờ/i
+        ];
 
-function countUnreadyPlayers() {
-    const waitTextMatchers = [
-        /chua/i,
-        /chưa/i,
-        /cho san sang/i,
-        /chờ sẵn sàng/i,
-        /not ready/i,
-        /waiting/i,
-        /idle/i,
-        /dang cho/i,
-        /đang chờ/i
-    ];
+        const members = [
+            ...document.querySelectorAll(
+                '.room-member, .member-item, .player-item, .room-user, .user-item, ' +
+                '.lobby-player, .player-card, .char-card, .member, ' +
+                '.room-players .item, .players .item, .player-list .item, ' +
+                '.member-list .member, .user-list .user'
+            )
+        ];
 
-    const members = [
-        ...document.querySelectorAll(
-            '.room-member, .member-item, .player-item, .room-user, .user-item, ' +
-            '.lobby-player, .player-card, .char-card, .member, ' +
-            '.room-players .item, .players .item, .player-list .item, ' +
-            '.member-list .member, .user-list .user'
-        )
-    ];
+        let unreadyCount = 0;
 
-    let unreadyCount = 0;
+        for (const row of members) {
+            if (!isVisible(row)) continue;
 
-    for (const row of members) {
-        if (!isVisible(row)) continue;
+            const rowText = row.textContent || '';
+            const isWaiting = waitTextMatchers.some(pattern => pattern.test(rowText));
 
-        const rowText = row.textContent || '';
-        const isWaiting = waitTextMatchers.some(pattern => pattern.test(rowText));
-
-        if (isWaiting) {
-            unreadyCount++;
+            if (isWaiting) {
+                unreadyCount++;
+            }
         }
+
+        return unreadyCount;
     }
 
-    return unreadyCount;
-}
+    function handleIdleKick() {
+        if (!scriptEnabled || !settings.autoKickIdle) return;
 
-function handleIdleKick() {
-    if (!scriptEnabled || !settings.autoKickIdle) return;
+        const waitTextMatchers = [
+            /chua/i,
+            /chưa/i,
+            /cho san sang/i,
+            /chờ sẵn sàng/i,
+            /not ready/i,
+            /waiting/i,
+            /idle/i,
+            /dang cho/i,
+            /đang chờ/i
+        ];
 
-    const waitTextMatchers = [
-        /chua/i,
-        /chưa/i,
-        /cho san sang/i,
-        /chờ sẵn sàng/i,
-        /not ready/i,
-        /waiting/i,
-        /idle/i,
-        /dang cho/i,
-        /đang chờ/i
-    ];
+        const members = [
+            ...document.querySelectorAll(
+                '.room-member, .member-item, .player-item, .room-user, .user-item, ' +
+                '.lobby-player, .player-card, .char-card, .member, ' +
+                '.room-players .item, .players .item, .player-list .item, ' +
+                '.member-list .member, .user-list .user'
+            )
+        ];
 
-    const members = [
-        ...document.querySelectorAll(
-            '.room-member, .member-item, .player-item, .room-user, .user-item, ' +
-            '.lobby-player, .player-card, .char-card, .member, ' +
-            '.room-players .item, .players .item, .player-list .item, ' +
-            '.member-list .member, .user-list .user'
-        )
-    ];
+        for (const row of members) {
+            if (!isVisible(row)) continue;
 
-    for (const row of members) {
-        if (!isVisible(row)) continue;
+            const rowText = row.textContent || '';
+            const isWaiting = waitTextMatchers.some(pattern => pattern.test(rowText));
 
-        const rowText = row.textContent || '';
-        const isWaiting = waitTextMatchers.some(pattern => pattern.test(rowText));
+            if (!isWaiting) {
+                idleKickTracker.delete(row);
+                continue;
+            }
 
-        // Nếu người chơi đã sẵn sàng thì xóa bộ đếm cũ
-        if (!isWaiting) {
+            const now = Date.now();
+
+            if (!idleKickTracker.has(row)) {
+                idleKickTracker.set(row, now);
+                console.log(`${LOG} ⏳ Phát hiện người chưa sẵn sàng, bắt đầu đếm ${settings.idleKickSeconds}s`);
+                continue;
+            }
+
+            const startedAt = idleKickTracker.get(row);
+            const elapsed = (now - startedAt) / 1000;
+
+            if (elapsed < settings.idleKickSeconds) continue;
+
+            const kickButtons = findKickButtonsForRow(row);
+            const kickButton = kickButtons[0];
+
+            if (!kickButton || !isVisible(kickButton)) continue;
+            if (!canAct()) continue;
+
+            kickButton.click();
+            console.log(`${LOG} 🧹 Đã tự động trục xuất người chưa sẵn sàng sau ${settings.idleKickSeconds}s`);
             idleKickTracker.delete(row);
-            continue;
         }
-
-        const now = Date.now();
-
-        if (!idleKickTracker.has(row)) {
-            idleKickTracker.set(row, now);
-            console.log(
-                `${LOG} ⏳ Phát hiện người chưa sẵn sàng, bắt đầu đếm ${settings.idleKickSeconds}s`
-            );
-            continue;
-        }
-
-        const startedAt = idleKickTracker.get(row);
-        const elapsed = (now - startedAt) / 1000;
-
-        if (elapsed < settings.idleKickSeconds) continue;
-
-        const kickButtons = findKickButtonsForRow(row);
-        const kickButton = kickButtons[0];
-
-        if (!kickButton || !isVisible(kickButton)) continue;
-        if (!canAct()) continue;
-
-        kickButton.click();
-
-        console.log(
-            `${LOG} 🧹 Đã tự động trục xuất người chưa sẵn sàng sau ${settings.idleKickSeconds}s`
-        );
-
-        idleKickTracker.delete(row);
     }
-}
 
-   const PANEL_ICON_URL = 'https://github.com/Sakute287/HH3D/blob/main/bunny.jpg'; // <- thay bằng URL ảnh của bạn
+    const PANEL_ICON_URL = 'https://github.com/Sakute287/HH3D/blob/main/bunny.jpg';
 
-function ensureConfigUI() {
-    if (document.getElementById('hh3d-maze-config-panel')) return;
+    function ensureConfigUI() {
+        if (document.getElementById('hh3d-maze-config-panel')) return;
 
-    const panel = document.createElement('div');
-    panel.id = 'hh3d-maze-config-panel';
-    panel.dataset.collapsed = 'false';
-    panel.style.position = 'fixed';
-    panel.style.right = '18px';
-    panel.style.top = '18px';
-    panel.style.zIndex = '999999';
-    panel.style.width = '270px';
-    panel.style.minHeight = '52px';
-    panel.style.background = 'linear-gradient(180deg, rgba(14,17,22,0.96), rgba(22,30,40,0.9))';
-    panel.style.border = '1px solid rgba(255,255,255,0.12)';
-    panel.style.borderRadius = '12px';
-    panel.style.padding = '10px 12px 12px';
-    panel.style.color = '#fff';
-    panel.style.fontSize = '13px';
-    panel.style.fontFamily = 'Arial, sans-serif';
-    panel.style.boxShadow = '0 8px 26px rgba(0,0,0,0.35)';
-    panel.style.backdropFilter = 'blur(6px)';
-    panel.style.transition = 'width 0.2s ease, padding 0.2s ease';
+        const panel = document.createElement('div');
+        panel.id = 'hh3d-maze-config-panel';
+        panel.dataset.collapsed = 'false';
+        panel.style.position = 'fixed';
+        panel.style.right = '18px';
+        panel.style.top = '18px';
+        panel.style.zIndex = '999999';
+        panel.style.width = '270px';
+        panel.style.minHeight = '52px';
+        panel.style.background = 'linear-gradient(180deg, rgba(14,17,22,0.96), rgba(22,30,40,0.9))';
+        panel.style.border = '1px solid rgba(255,255,255,0.12)';
+        panel.style.borderRadius = '12px';
+        panel.style.padding = '10px 12px 12px';
+        panel.style.color = '#fff';
+        panel.style.fontSize = '13px';
+        panel.style.fontFamily = 'Arial, sans-serif';
+        panel.style.boxShadow = '0 8px 26px rgba(0,0,0,0.35)';
+        panel.style.backdropFilter = 'blur(6px)';
+        panel.style.transition = 'width 0.2s ease, padding 0.2s ease';
 
-    const headerRow = document.createElement('div');
-    headerRow.style.display = 'flex';
-    headerRow.style.alignItems = 'center';
-    headerRow.style.justifyContent = 'space-between';
-    headerRow.style.gap = '8px';
-    headerRow.style.marginBottom = '8px';
+        const headerRow = document.createElement('div');
+        headerRow.style.display = 'flex';
+        headerRow.style.alignItems = 'center';
+        headerRow.style.justifyContent = 'space-between';
+        headerRow.style.gap = '8px';
+        headerRow.style.marginBottom = '8px';
 
-    const title = document.createElement('div');
-    title.textContent = 'Sakute';
-    title.style.fontWeight = '700';
-    title.style.fontSize = '14px';
-    title.style.color = '#f8d9ae';
+        const title = document.createElement('div');
+        title.textContent = 'Sakute';
+        title.style.fontWeight = '700';
+        title.style.fontSize = '14px';
+        title.style.color = '#f8d9ae';
 
-    const toggleBtn = document.createElement('button');
-    toggleBtn.type = 'button';
-    toggleBtn.title = 'Thu gọn / mở rộng panel';
-    toggleBtn.style.width = '42px';
-    toggleBtn.style.height = '42px';
-    toggleBtn.style.border = '1px solid rgba(255,255,255,0.15)';
-    toggleBtn.style.borderRadius = '12px';
-    toggleBtn.style.cursor = 'pointer';
-    toggleBtn.style.background = 'linear-gradient(180deg, rgba(255,255,255,0.2), rgba(255,255,255,0.05))';
-    toggleBtn.style.backgroundImage = `url("${PANEL_ICON_URL}")`;
-    toggleBtn.style.backgroundSize = 'cover';
-    toggleBtn.style.backgroundPosition = 'center';
-    toggleBtn.style.backgroundRepeat = 'no-repeat';
-    toggleBtn.style.boxShadow = '0 4px 10px rgba(0,0,0,0.2)';
-    toggleBtn.style.flexShrink = '0';
+        const toggleBtn = document.createElement('button');
+        toggleBtn.type = 'button';
+        toggleBtn.title = 'Thu gọn / mở rộng panel';
+        toggleBtn.style.width = '42px';
+        toggleBtn.style.height = '42px';
+        toggleBtn.style.border = '1px solid rgba(255,255,255,0.15)';
+        toggleBtn.style.borderRadius = '12px';
+        toggleBtn.style.cursor = 'pointer';
+        toggleBtn.style.background = 'linear-gradient(180deg, rgba(255,255,255,0.2), rgba(255,255,255,0.05))';
+        toggleBtn.style.backgroundImage = `url("${PANEL_ICON_URL}")`;
+        toggleBtn.style.backgroundSize = 'cover';
+        toggleBtn.style.backgroundPosition = 'center';
+        toggleBtn.style.backgroundRepeat = 'no-repeat';
+        toggleBtn.style.boxShadow = '0 4px 10px rgba(0,0,0,0.2)';
+        toggleBtn.style.flexShrink = '0';
 
-    const statusBtn = document.createElement('button');
-    statusBtn.type = 'button';
-    statusBtn.textContent = scriptEnabled ? 'DỪNG' : 'CHẠY';
-    statusBtn.style.border = 'none';
-    statusBtn.style.borderRadius = '8px';
-    statusBtn.style.padding = '8px 14px';
-    statusBtn.style.fontWeight = '700';
-    statusBtn.style.color = '#fff';
-    statusBtn.style.cursor = 'pointer';
-    statusBtn.style.background = scriptEnabled ? '#ff6e6e' : '#3ba55d';
-    statusBtn.style.boxShadow = '0 4px 10px rgba(0,0,0,0.2)';
-
-    statusBtn.addEventListener('click', () => {
-        scriptEnabled = !scriptEnabled;
-        saveSettings();
+        const statusBtn = document.createElement('button');
+        statusBtn.type = 'button';
         statusBtn.textContent = scriptEnabled ? 'DỪNG' : 'CHẠY';
+        statusBtn.style.border = 'none';
+        statusBtn.style.borderRadius = '8px';
+        statusBtn.style.padding = '8px 14px';
+        statusBtn.style.fontWeight = '700';
+        statusBtn.style.color = '#fff';
+        statusBtn.style.cursor = 'pointer';
         statusBtn.style.background = scriptEnabled ? '#ff6e6e' : '#3ba55d';
-        console.log(`${LOG} ${scriptEnabled ? 'Bật' : 'Tắt'} tool`);
-    });
+        statusBtn.style.boxShadow = '0 4px 10px rgba(0,0,0,0.2)';
 
-    const applyPanelState = () => {
-        const collapsed = panel.dataset.collapsed === 'true';
-        panel.style.width = collapsed ? '58px' : '270px';
-        title.style.display = collapsed ? 'none' : 'block';
-        statusBtn.style.display = collapsed ? 'none' : 'inline-block';
-        settingsWrap.style.display = collapsed ? 'none' : 'flex';
-        toggleBtn.style.transform = collapsed ? 'rotate(180deg)' : 'rotate(0deg)';
-        toggleBtn.title = collapsed ? 'Mở rộng panel' : 'Thu gọn panel';
-    };
+        statusBtn.addEventListener('click', () => {
+            scriptEnabled = !scriptEnabled;
+            saveSettings();
+            statusBtn.textContent = scriptEnabled ? 'DỪNG' : 'CHẠY';
+            statusBtn.style.background = scriptEnabled ? '#ff6e6e' : '#3ba55d';
+            console.log(`${LOG} ${scriptEnabled ? 'Bật' : 'Tắt'} tool`);
+        });
 
-    toggleBtn.addEventListener('click', () => {
-        panel.dataset.collapsed = panel.dataset.collapsed === 'true' ? 'false' : 'true';
-        applyPanelState();
-    });
+        const applyPanelState = () => {
+            const collapsed = panel.dataset.collapsed === 'true';
+            panel.style.width = collapsed ? '58px' : '270px';
+            title.style.display = collapsed ? 'none' : 'block';
+            statusBtn.style.display = collapsed ? 'none' : 'inline-block';
+            settingsWrap.style.display = collapsed ? 'none' : 'flex';
+            toggleBtn.style.transform = collapsed ? 'rotate(180deg)' : 'rotate(0deg)';
+            toggleBtn.title = collapsed ? 'Mở rộng panel' : 'Thu gọn panel';
+        };
 
-    headerRow.appendChild(title);
-    headerRow.appendChild(statusBtn);
-    headerRow.appendChild(toggleBtn);
+        toggleBtn.addEventListener('click', () => {
+            panel.dataset.collapsed = panel.dataset.collapsed === 'true' ? 'false' : 'true';
+            applyPanelState();
+        });
 
-    const settingsWrap = document.createElement('div');
-    settingsWrap.style.display = 'flex';
-    settingsWrap.style.flexDirection = 'column';
-    settingsWrap.style.gap = '10px';
-    settingsWrap.style.marginTop = '6px';
+        headerRow.appendChild(title);
+        headerRow.appendChild(statusBtn);
+        headerRow.appendChild(toggleBtn);
 
-    const rowRequired = document.createElement('div');
-    rowRequired.style.display = 'flex';
-    rowRequired.style.alignItems = 'center';
-    rowRequired.style.justifyContent = 'space-between';
-    rowRequired.style.gap = '8px';
-    rowRequired.style.padding = '4px 0';
+        const settingsWrap = document.createElement('div');
+        settingsWrap.style.display = 'flex';
+        settingsWrap.style.flexDirection = 'column';
+        settingsWrap.style.gap = '10px';
+        settingsWrap.style.marginTop = '6px';
 
-    const labelRequired = document.createElement('label');
-    labelRequired.textContent = 'Người tối thiểu để bắt đầu';
-    labelRequired.style.color = '#f0f0f0';
-    labelRequired.style.fontWeight = '600';
+        const rowRequired = document.createElement('div');
+        rowRequired.style.display = 'flex';
+        rowRequired.style.alignItems = 'center';
+        rowRequired.style.justifyContent = 'space-between';
+        rowRequired.style.gap = '8px';
+        rowRequired.style.padding = '4px 0';
 
-    const selectRequired = document.createElement('select');
-    selectRequired.style.minWidth = '82px';
-    selectRequired.style.padding = '6px 8px';
-    selectRequired.style.borderRadius = '8px';
-    selectRequired.style.border = '1px solid rgba(255,255,255,0.15)';
-    selectRequired.style.background = '#1c2430';
-    selectRequired.style.color = '#fff';
+        const labelRequired = document.createElement('label');
+        labelRequired.textContent = 'Người tối thiểu để bắt đầu';
+        labelRequired.style.color = '#f0f0f0';
+        labelRequired.style.fontWeight = '600';
 
-    for (let i = 1; i <= 5; i++) {
-        const opt = document.createElement('option');
-        opt.value = String(i);
-        opt.textContent = String(i);
-        if (i === settings.requiredPlayers) opt.selected = true;
-        selectRequired.appendChild(opt);
-    }
+        const selectRequired = document.createElement('select');
+        selectRequired.style.minWidth = '82px';
+        selectRequired.style.padding = '6px 8px';
+        selectRequired.style.borderRadius = '8px';
+        selectRequired.style.border = '1px solid rgba(255,255,255,0.15)';
+        selectRequired.style.background = '#1c2430';
+        selectRequired.style.color = '#fff';
 
-    selectRequired.addEventListener('change', () => {
-        settings.requiredPlayers = clampInt(selectRequired.value, 1, 5, DEFAULT_SETTINGS.requiredPlayers);
-        saveSettings();
-        startedCurrentCycle = false;
-        console.log(`${LOG} 🧩 Đã đổi số người bắt đầu thành: ${settings.requiredPlayers}`);
-    });
+        for (let i = 1; i <= 5; i++) {
+            const opt = document.createElement('option');
+            opt.value = String(i);
+            opt.textContent = String(i);
+            if (i === settings.requiredPlayers) opt.selected = true;
+            selectRequired.appendChild(opt);
+        }
 
-    rowRequired.appendChild(labelRequired);
-    rowRequired.appendChild(selectRequired);
+        selectRequired.addEventListener('change', () => {
+            settings.requiredPlayers = clampInt(selectRequired.value, 1, 5, DEFAULT_SETTINGS.requiredPlayers);
+            saveSettings();
+            startedCurrentCycle = false;
+            console.log(`${LOG} 🧩 Đã đổi số người bắt đầu thành: ${settings.requiredPlayers}`);
+        });
 
-    const rowKick = document.createElement('div');
-    rowKick.style.display = 'flex';
-    rowKick.style.alignItems = 'center';
-    rowKick.style.justifyContent = 'space-between';
-    rowKick.style.gap = '8px';
-    rowKick.style.padding = '4px 0';
+        rowRequired.appendChild(labelRequired);
+        rowRequired.appendChild(selectRequired);
 
-    const labelKick = document.createElement('label');
-    labelKick.textContent = 'Trục xuất người chưa sẵn sàng';
-    labelKick.style.color = '#f0f0f0';
-    labelKick.style.fontWeight = '600';
+        const rowDifficulty = document.createElement('div');
+        rowDifficulty.style.display = 'flex';
+        rowDifficulty.style.alignItems = 'center';
+        rowDifficulty.style.justifyContent = 'space-between';
+        rowDifficulty.style.gap = '8px';
+        rowDifficulty.style.padding = '4px 0';
 
-    const kickToggleWrap = document.createElement('div');
-    kickToggleWrap.style.display = 'flex';
-    kickToggleWrap.style.alignItems = 'center';
-    kickToggleWrap.style.gap = '6px';
+        const labelDifficulty = document.createElement('label');
+        labelDifficulty.textContent = 'Độ khó phòng';
+        labelDifficulty.style.color = '#f0f0f0';
+        labelDifficulty.style.fontWeight = '600';
 
-    const kickToggle = document.createElement('button');
-    kickToggle.type = 'button';
-    kickToggle.textContent = settings.autoKickIdle ? 'TẮT' : 'BẬT';
-    kickToggle.style.border = 'none';
-    kickToggle.style.borderRadius = '8px';
-    kickToggle.style.padding = '6px 10px';
-    kickToggle.style.background = settings.autoKickIdle ? '#ff9d2c' : '#4d5560';
-    kickToggle.style.color = '#fff';
-    kickToggle.style.cursor = 'pointer';
-    kickToggle.style.fontWeight = '700';
+        const selectDifficulty = document.createElement('select');
+        selectDifficulty.style.minWidth = '82px';
+        selectDifficulty.style.padding = '6px 8px';
+        selectDifficulty.style.borderRadius = '8px';
+        selectDifficulty.style.border = '1px solid rgba(255,255,255,0.15)';
+        selectDifficulty.style.background = '#1c2430';
+        selectDifficulty.style.color = '#fff';
 
-    kickToggle.addEventListener('click', () => {
-        settings.autoKickIdle = !settings.autoKickIdle;
-        saveSettings();
+        DIFFICULTY_OPTIONS.forEach(difficulty => {
+            const opt = document.createElement('option');
+            opt.value = difficulty;
+            opt.textContent = difficulty;
+            if (difficulty === settings.difficulty) opt.selected = true;
+            selectDifficulty.appendChild(opt);
+        });
+
+        selectDifficulty.addEventListener('change', () => {
+            settings.difficulty = selectDifficulty.value;
+            saveSettings();
+            console.log(`${LOG} ⚔️ Đã đổi độ khó thành: ${settings.difficulty}`);
+        });
+
+        rowDifficulty.appendChild(labelDifficulty);
+        rowDifficulty.appendChild(selectDifficulty);
+
+        const rowKick = document.createElement('div');
+        rowKick.style.display = 'flex';
+        rowKick.style.alignItems = 'center';
+        rowKick.style.justifyContent = 'space-between';
+        rowKick.style.gap = '8px';
+        rowKick.style.padding = '4px 0';
+
+        const labelKick = document.createElement('label');
+        labelKick.textContent = 'Trục xuất người chưa sẵn sàng';
+        labelKick.style.color = '#f0f0f0';
+        labelKick.style.fontWeight = '600';
+
+        const kickToggle = document.createElement('button');
+        kickToggle.type = 'button';
         kickToggle.textContent = settings.autoKickIdle ? 'TẮT' : 'BẬT';
+        kickToggle.style.border = 'none';
+        kickToggle.style.borderRadius = '8px';
+        kickToggle.style.padding = '6px 10px';
         kickToggle.style.background = settings.autoKickIdle ? '#ff9d2c' : '#4d5560';
-        console.log(`${LOG} 🧹 Auto kick người chờ: ${settings.autoKickIdle ? 'ON' : 'OFF'}`);
-    });
+        kickToggle.style.color = '#fff';
+        kickToggle.style.cursor = 'pointer';
+        kickToggle.style.fontWeight = '700';
 
-    rowKick.appendChild(labelKick);
-    rowKick.appendChild(kickToggle);
+        kickToggle.addEventListener('click', () => {
+            settings.autoKickIdle = !settings.autoKickIdle;
+            saveSettings();
+            kickToggle.textContent = settings.autoKickIdle ? 'TẮT' : 'BẬT';
+            kickToggle.style.background = settings.autoKickIdle ? '#ff9d2c' : '#4d5560';
+            console.log(`${LOG} 🧹 Auto kick người chờ: ${settings.autoKickIdle ? 'ON' : 'OFF'}`);
+        });
 
-    const rowKickDelay = document.createElement('div');
-    rowKickDelay.style.display = 'flex';
-    rowKickDelay.style.alignItems = 'center';
-    rowKickDelay.style.justifyContent = 'space-between';
-    rowKickDelay.style.gap = '8px';
-    rowKickDelay.style.padding = '4px 0';
+        rowKick.appendChild(labelKick);
+        rowKick.appendChild(kickToggle);
 
-    const labelDelay = document.createElement('label');
-    labelDelay.textContent = 'Thời gian chờ trực xuất';
-    labelDelay.style.color = '#f0f0f0';
-    labelDelay.style.fontWeight = '600';
+        const rowKickDelay = document.createElement('div');
+        rowKickDelay.style.display = 'flex';
+        rowKickDelay.style.alignItems = 'center';
+        rowKickDelay.style.justifyContent = 'space-between';
+        rowKickDelay.style.gap = '8px';
+        rowKickDelay.style.padding = '4px 0';
 
-    const delayInput = document.createElement('input');
-    delayInput.type = 'number';
-    delayInput.min = '1';
-    delayInput.max = '60';
-    delayInput.value = String(settings.idleKickSeconds);
-    delayInput.style.width = '56px';
-    delayInput.style.padding = '6px 8px';
-    delayInput.style.borderRadius = '8px';
-    delayInput.style.border = '1px solid rgba(255,255,255,0.15)';
-    delayInput.style.background = '#1b2430';
-    delayInput.style.color = '#fff';
-    delayInput.style.textAlign = 'center';
+        const labelDelay = document.createElement('label');
+        labelDelay.textContent = 'Thời gian chờ trực xuất';
+        labelDelay.style.color = '#f0f0f0';
+        labelDelay.style.fontWeight = '600';
 
-    delayInput.addEventListener('change', () => {
-        settings.idleKickSeconds = clampInt(delayInput.value, 1, 60, DEFAULT_SETTINGS.idleKickSeconds);
-        saveSettings();
-        console.log(`${LOG} ⏱️ Thời gian chờ trực xuất: ${settings.idleKickSeconds}s`);
-    });
+        const delayInput = document.createElement('input');
+        delayInput.type = 'number';
+        delayInput.min = '1';
+        delayInput.max = '60';
+        delayInput.value = String(settings.idleKickSeconds);
+        delayInput.style.width = '56px';
+        delayInput.style.padding = '6px 8px';
+        delayInput.style.borderRadius = '8px';
+        delayInput.style.border = '1px solid rgba(255,255,255,0.15)';
+        delayInput.style.background = '#1b2430';
+        delayInput.style.color = '#fff';
+        delayInput.style.textAlign = 'center';
 
-    rowKickDelay.appendChild(labelDelay);
-    rowKickDelay.appendChild(delayInput);
+        delayInput.addEventListener('change', () => {
+            settings.idleKickSeconds = clampInt(delayInput.value, 1, 60, DEFAULT_SETTINGS.idleKickSeconds);
+            saveSettings();
+            console.log(`${LOG} ⏱️ Thời gian chờ trực xuất: ${settings.idleKickSeconds}s`);
+        });
 
-    settingsWrap.appendChild(rowRequired);
-    settingsWrap.appendChild(rowKick);
-    settingsWrap.appendChild(rowKickDelay);
+        rowKickDelay.appendChild(labelDelay);
+        rowKickDelay.appendChild(delayInput);
 
-    panel.appendChild(headerRow);
-    panel.appendChild(settingsWrap);
-    document.body.appendChild(panel);
+        settingsWrap.appendChild(rowRequired);
+        settingsWrap.appendChild(rowDifficulty);
+        settingsWrap.appendChild(rowKick);
+        settingsWrap.appendChild(rowKickDelay);
 
-    applyPanelState();
-}
+        panel.appendChild(headerRow);
+        panel.appendChild(settingsWrap);
+        document.body.appendChild(panel);
+
+        applyPanelState();
+    }
 
     function handleWaitingRoom() {
-        ensureToggle(
-            SELECTORS.autoReadyTrack,
-            SELECTORS.autoReadyToggle,
-            'Tự động sẵn sàng'
-        );
-
-        ensureToggle(
-            SELECTORS.autoNextStageTrack,
-            SELECTORS.autoNextStageToggle,
-            'Tự động chuyển ải'
-        );
-
-        ensureToggle(
-            SELECTORS.autoOpenChestTrack,
-            SELECTORS.autoOpenChestToggle,
-            'Tự động mở rương'
-        );
+        ensureToggle(SELECTORS.autoReadyTrack, SELECTORS.autoReadyToggle, 'Tự động sẵn sàng');
+        ensureToggle(SELECTORS.autoNextStageTrack, SELECTORS.autoNextStageToggle, 'Tự động chuyển ải');
+        ensureToggle(SELECTORS.autoOpenChestTrack, SELECTORS.autoOpenChestToggle, 'Tự động mở rương');
 
         handleIdleKick();
 
@@ -639,7 +658,6 @@ function ensureConfigUI() {
         const playerCount = getVisibleRoomPlayerCount();
         const unreadyCount = countUnreadyPlayers();
 
-        // Kiểm tra số người trong phòng
         if (playerCount > 0 && playerCount < settings.requiredPlayers) {
             if (playerCount !== lastPlayerCountLog) {
                 console.log(`${LOG} ⏳ Đợi đủ người: ${playerCount}/${settings.requiredPlayers}`);
@@ -648,7 +666,6 @@ function ensureConfigUI() {
             return;
         }
 
-        // Kiểm tra nếu có người chưa sẵn sàng
         if (unreadyCount > 0) {
             if (playerCount !== lastPlayerCountLog) {
                 console.log(`${LOG} ⏳ Có ${unreadyCount} người chưa sẵn sàng, chờ mọi người ready...`);
@@ -659,7 +676,6 @@ function ensureConfigUI() {
 
         lastPlayerCountLog = playerCount;
 
-        // Chỉ bắt đầu khi: đủ người, mọi người ready, và chưa bấm START
         if (!startedCurrentCycle && isVisible(startBtn) && !startBtn.disabled && playerCount >= settings.requiredPlayers) {
             if (clickOnce(SELECTORS.startButton, `▶️ Đã bấm BẮT ĐẦU (${playerCount} người, tất cả sẵn sàng)`)) {
                 startedCurrentCycle = true;
@@ -779,12 +795,13 @@ function ensureConfigUI() {
 
     function start() {
         console.log(`${LOG} 🚀 Đã khởi động.`);
-        const RELOAD_INTERVAL = 15 * 60 * 1000; // 15 phút
+        const RELOAD_INTERVAL = 15 * 60 * 1000;
 
-setTimeout(() => {
-    console.log(`${LOG} 🔄 Đã đủ 15 phút, tự động tải lại trang.`);
-    window.location.reload();
-}, RELOAD_INTERVAL);
+        setTimeout(() => {
+            console.log(`${LOG} 🔄 Đã đủ 15 phút, tự động tải lại trang.`);
+            window.location.reload();
+        }, RELOAD_INTERVAL);
+
         ensureConfigUI();
 
         const observer = new MutationObserver(() => {
