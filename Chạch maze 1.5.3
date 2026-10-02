@@ -681,6 +681,11 @@
     }
 
     function handleWaitingRoom() {
+        if (!roomModeApplied) {
+            applyRoomMode();
+            if (!roomModeApplied && settings.nextRoomMode) return;
+        }
+
         ensureToggle(SELECTORS.autoReadyTrack, SELECTORS.autoReadyToggle, 'Tự động sẵn sàng');
         ensureToggle(SELECTORS.autoNextStageTrack, SELECTORS.autoNextStageToggle, 'Tự động chuyển ải');
         ensureToggle(SELECTORS.autoOpenChestTrack, SELECTORS.autoOpenChestToggle, 'Tự động mở rương');
