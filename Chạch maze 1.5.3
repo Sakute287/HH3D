@@ -81,9 +81,39 @@
     ];
 
     const ROOM_MODES = {
-        'normal': { name: 'Bình thường', selector: '[data-mode="normal"], .mode-normal, .btn-normal-mode' },
-        'hard': { name: 'Khó', selector: '[data-mode="hard"], .mode-hard, .btn-hard-mode' },
-        'hell': { name: 'Địa ngục', selector: '[data-mode="hell"], .mode-hell, .btn-hell-mode' }
+        'normal': { 
+            name: 'Bình thường', 
+            selectors: [
+                '[data-mode="normal"]',
+                '.mode-normal',
+                '.btn-normal-mode',
+                'button[title*="Bình thường"]',
+                'button:contains("Bình thường")',
+                'div[title*="normal"]'
+            ]
+        },
+        'hard': { 
+            name: 'Khó', 
+            selectors: [
+                '[data-mode="hard"]',
+                '.mode-hard',
+                '.btn-hard-mode',
+                'button[title*="Khó"]',
+                'button:contains("Khó")',
+                'div[title*="hard"]'
+            ]
+        },
+        'hell': { 
+            name: 'Địa ngục', 
+            selectors: [
+                '[data-mode="hell"]',
+                '.mode-hell',
+                '.btn-hell-mode',
+                'button[title*="Địa ngục"]',
+                'button:contains("Địa ngục")',
+                'div[title*="hell"]'
+            ]
+        }
     };
 
     let settings = { ...DEFAULT_SETTINGS };
@@ -410,24 +440,67 @@ function handleIdleKick() {
     }
 }
 
+function findModeButton(mode) {
+    if (!mode || !mode.selectors) return null;
+
+    for (const selector of mode.selectors) {
+        const elements = document.querySelectorAll(selector);
+        for (const el of elements) {
+            if (isVisible(el)) {
+                return el;
+            }
+        }
+    }
+
+    // Fallback: tìm bằng text content
+    const buttons = document.querySelectorAll('button, div[role="button"], [data-mode]');
+    for (const btn of buttons) {
+        if (!isVisible(btn)) continue;
+        const text = normalizeText(btn.textContent || btn.title || '');
+        if (text.includes(normalizeText(mode.name))) {
+            return btn;
+        }
+    }
+
+    return null;
+}
+
 function applyRoomMode() {
-    if (roomModeApplied || !settings.nextRoomMode) return;
+    if (!settings.nextRoomMode) return;
 
     const mode = ROOM_MODES[settings.nextRoomMode];
     if (!mode) return;
 
-    const modeButtons = document.querySelectorAll(mode.selector);
-    if (modeButtons.length === 0) return;
-
-    for (const btn of modeButtons) {
-        if (!isVisible(btn)) continue;
-        if (!canAct()) continue;
-
-        btn.click();
-        console.log(`${LOG} 🎮 Đã chọn chế độ: ${mode.name}`);
-        roomModeApplied = true;
+    const modeButton = findModeButton(mode);
+    
+    if (!modeButton) {
+        if (!roomModeApplied) {
+            console.log(`${LOG} ⚠️ Không tìm thấy nút chế độ "${mode.name}", đang tìm kiếm...`);
+        }
         return;
     }
+
+    // Kiểm tra nếu button đã được chọn (class 'selected', 'active', v.v.)
+    const isAlreadySelected = 
+        modeButton.classList.contains('selected') || 
+        modeButton.classList.contains('active') || 
+        modeButton.classList.contains('on') ||
+        modeButton.getAttribute('data-mode') === settings.nextRoomMode ||
+        modeButton.getAttribute('aria-pressed') === 'true';
+
+    if (isAlreadySelected) {
+        if (!roomModeApplied) {
+            console.log(`${LOG} 🎮 Chế độ "${mode.name}" đã được chọn sẵn.`);
+            roomModeApplied = true;
+        }
+        return;
+    }
+
+    if (!canAct()) return;
+
+    modeButton.click();
+    console.log(`${LOG} 🎮 Đã chọn chế độ: ${mode.name}`);
+    roomModeApplied = true;
 }
 
    const PANEL_ICON_URL = 'https://github.com/Sakute287/HH3D/blob/main/bunny.jpg'; // <- thay bằng URL ảnh của bạn
@@ -672,6 +745,7 @@ function ensureConfigUI() {
     selectRoomMode.addEventListener('change', () => {
         settings.nextRoomMode = selectRoomMode.value;
         saveSettings();
+        roomModeApplied = false; // Reset flag để cho phép apply lại
         console.log(`${LOG} 🎮 Chế độ lần tiếp theo được đặt thành: ${ROOM_MODES[settings.nextRoomMode].name}`);
     });
 
