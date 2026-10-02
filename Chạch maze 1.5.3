@@ -81,9 +81,9 @@
     ];
 
     const ROOM_MODES = {
-        normal: { name: 'Bình thường', selector: '[data-mode="normal"], .mode-normal, .btn-normal-mode' },
-        hard: { name: 'Khó', selector: '[data-mode="hard"], .mode-hard, .btn-hard-mode' },
-        hell: { name: 'Địa ngục', selector: '[data-mode="hell"], .mode-hell, .btn-hell-mode' }
+        normal: { name: 'Bình thường', selectors: ['[data-mode="normal"]', '.mode-normal', '.btn-normal-mode', 'button:contains("Bình thường")', '[title*="Bình thường" i]'] },
+        hard: { name: 'Khó', selectors: ['[data-mode="hard"]', '.mode-hard', '.btn-hard-mode', 'button:contains("Khó")', '[title*="Khó" i]'] },
+        hell: { name: 'Địa ngục', selectors: ['[data-mode="hell"]', '.mode-hell', '.btn-hell-mode', 'button:contains("Địa ngục")', '[title*="Địa ngục" i]'] }
     };
 
     let settings = { ...DEFAULT_SETTINGS };
@@ -403,26 +403,58 @@
         }
     }
 
+    function findRoomModeButton() {
+        if (roomModeApplied || !settings.nextRoomMode) return null;
+
+        const mode = ROOM_MODES[settings.nextRoomMode];
+        if (!mode) return null;
+
+        // Thử tất cả các selector
+        for (const selector of mode.selectors) {
+            // Bỏ qua :contains() vì nó không hoạt động trong querySelectorAll
+            if (selector.includes(':contains')) {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                for (const btn of buttons) {
+                    if (!isVisible(btn)) continue;
+                    if (btn.textContent.includes(mode.name)) {
+                        return btn;
+                    }
+                }
+                continue;
+            }
+
+            const elements = document.querySelectorAll(selector);
+            for (const el of elements) {
+                if (isVisible(el)) return el;
+            }
+        }
+
+        // Fallback: tìm button có chứa text mode name
+        const allButtons = Array.from(document.querySelectorAll('button, [role="button"], a'));
+        for (const btn of allButtons) {
+            if (!isVisible(btn)) continue;
+            if (normalizeText(btn.textContent).includes(normalizeText(mode.name))) {
+                return btn;
+            }
+        }
+
+        return null;
+    }
+
     function applyRoomMode() {
         if (roomModeApplied || !settings.nextRoomMode) return;
 
-        const mode = ROOM_MODES[settings.nextRoomMode];
-        if (!mode) return;
-
-        const selectors = mode.selector.split(',').map(s => s.trim());
-
-        for (const selector of selectors) {
-            const buttons = document.querySelectorAll(selector);
-            for (const btn of buttons) {
-                if (!isVisible(btn)) continue;
-                if (!canAct()) continue;
-
-                btn.click();
-                console.log(`${LOG} 🎮 Đã chọn chế độ: ${mode.name}`);
-                roomModeApplied = true;
-                return;
-            }
+        const btn = findRoomModeButton();
+        if (!btn) {
+            console.log(`${LOG} 🔍 Không tìm thấy nút chế độ ${ROOM_MODES[settings.nextRoomMode].name}`);
+            return;
         }
+
+        if (!canAct()) return;
+
+        btn.click();
+        console.log(`${LOG} 🎮 Đã chọn chế độ: ${ROOM_MODES[settings.nextRoomMode].name}`);
+        roomModeApplied = true;
     }
 
     const PANEL_ICON_URL = 'https://github.com/Sakute287/HH3D/blob/main/bunny.jpg';
@@ -683,7 +715,6 @@
     function handleWaitingRoom() {
         if (!roomModeApplied) {
             applyRoomMode();
-            if (!roomModeApplied && settings.nextRoomMode) return;
         }
 
         ensureToggle(SELECTORS.autoReadyTrack, SELECTORS.autoReadyToggle, 'Tự động sẵn sàng');
@@ -780,6 +811,8 @@
 
         if (clickOnce(SELECTORS.backLobbyButton, '🏠 Đã bấm QUAY VỀ SẢNH → loop lại')) {
             rewardHandled = true;
+            // Reset roomModeApplied để lần tiếp theo có thể áp dụng chế độ mới
+            roomModeApplied = false;
         }
     }
 
