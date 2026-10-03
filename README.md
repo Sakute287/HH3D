@@ -29,4 +29,13 @@ Máy quét 0tk hoạt động vào 20h mỗi Chủ nhật.
 
 Quyền giải thích cuối cùng thuộc về cao tầng, cao nhất là của TCPN.
 
-Key Vấn Đáp: https://vandaptongmon.vercel.app/
+Key Vấn Đáp: 
+1. https://vandaptongmon.vercel.app/
+2. https://hh3d.phucthienlang.vn/
+
+cách cài tool
+1. tìm, tải và cài đặt extension (add-on) Tempermonkey về trình duyệt đang sử dụng, ghim vài thanh tiện ích. 
+2. right click vào Temper, chọn manage (quản lý), check cho phép truy cập URL.
+3. left click vào temper, chọn creat new
+4. truy cập github, mở script, copy, paste vào 3., Ctrl+S (save)
+5. về trang chủ, mở panel và thiết lập theo nhu cầu.
