@@ -34,7 +34,7 @@ Key Vấn Đáp:
 2. https://hh3d.phucthienlang.vn/
 
 cách cài tool
-1. tìm, tải và cài đặt extension (add-on) Tempermonkey về trình duyệt đang sử dụng, ghim vài thanh tiện ích. 
+1. tìm, tải và cài đặt extension (add-on) Tempermonkey về trình duyệt đang sử dụng, ghim vào thanh tiện ích. 
 2. right click vào Temper, chọn manage (quản lý), check cho phép truy cập URL.
 3. left click vào temper, chọn creat new
 4. truy cập github, mở script, copy, paste vào 3., Ctrl+S (save)
