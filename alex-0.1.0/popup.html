@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HH3D Auto Tool</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">
+                    <img src="https://static.ibytedance.net/wp-content/uploads/group-image/877094.jpg?t=1790992679&w=400" alt="">
+                </span>
+                <div class="logo-copy">
+                    <h1>HH3D Auto Tool</h1>
+                    <p>Thần Vực</p>
+                </div>
+            </div>
+            <div class="header-meta">
+                <div class="status-badge" id="statusBadge">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Sẵn sàng</span>
+                </div>
+                <div class="domain-indicator" id="domainIndicator" title="Domain đang mở">
+                    <span class="domain-text" id="domainText">Đang dò domain…</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="left-column">
+                <section class="section workers-section">
+                    <div class="section-header">
+                        <h2>Tác vụ</h2>
+                        <label class="toggle-all">
+                            <input type="checkbox" id="toggleAll">
+                            <span>Tất cả</span>
+                        </label>
+                    </div>
+
+                    <div class="workers-grid">
+                        <label class="worker-item" title="Tự mở rương ở Phúc Lợi Đường">
+                            <input type="checkbox" name="worker" value="chest" checked>
+                            <span class="worker-icon">🎁</span>
+                            <span class="worker-name">Phúc Lợi</span>
+                        </label>
+
+                        <label class="worker-item" title="Tự đánh Boss Hoang Vực">
+                            <input type="checkbox" name="worker" value="boss" checked>
+                            <span class="worker-icon">🛡️</span>
+                            <span class="worker-name">Hoang Vực</span>
+                        </label>
+
+                        <label class="worker-item" title="Tự đánh Boss Tông Môn">
+                            <input type="checkbox" name="worker" value="bossTongMon" checked>
+                            <span class="worker-icon">👹</span>
+                            <span class="worker-name">Tông Môn</span>
+                        </label>
+
+                        <label class="worker-item" title="Tự quay Vòng Quay Phúc Vận">
+                            <input type="checkbox" name="worker" value="spin" checked>
+                            <span class="worker-icon">🎡</span>
+                            <span class="worker-name">Vòng Quay</span>
+                        </label>
+
+                        <label class="worker-item" title="Tự mở rương Thí Luyện Tông Môn">
+                            <input type="checkbox" name="worker" value="tltm" checked>
+                            <span class="worker-icon">💎</span>
+                            <span class="worker-name">Thí Luyện</span>
+                        </label>
+
+                        <label class="worker-item" title="Tự trả lời câu hỏi Vấn Đáp">
+                            <input type="checkbox" name="worker" value="vanDap" checked>
+                            <span class="worker-icon">❓</span>
+                            <span class="worker-name">Vấn Đáp</span>
+                        </label>
+
+                        <label class="worker-item" title="Tự tế lễ khi còn lượt">
+                            <input type="checkbox" name="worker" value="teLe" checked>
+                            <span class="worker-icon">🙏</span>
+                            <span class="worker-name">Tế Lễ</span>
+                        </label>
+
+                        <label class="worker-item" title="Tự nhận thưởng hoạt động ngày">
+                            <input type="checkbox" name="worker" value="dailyReward" checked>
+                            <span class="worker-icon">🏆</span>
+                            <span class="worker-name">Thưởng Ngày</span>
+                        </label>
+
+                        <label class="worker-item" title="Tự vào mỏ và nhận thưởng">
+                            <input type="checkbox" name="worker" value="mining">
+                            <span class="worker-icon">⛏️</span>
+                            <span class="worker-name">Khoáng Mạch</span>
+                        </label>
+
+                        <label class="worker-item" title="Tự luyện đan và điều hỏa">
+                            <input type="checkbox" name="worker" value="luyenDan">
+                            <span class="worker-icon">🧪</span>
+                            <span class="worker-name">Luyện Đan</span>
+                        </label>
+
+                        <label class="worker-item" title="Tự lập hoặc vào phòng, chiến đấu và nhận rương">
+                            <input type="checkbox" name="worker" value="meCung">
+                            <span class="worker-icon">⚔️</span>
+                            <span class="worker-name">Mê Cung</span>
+                        </label>
+                    </div>
+                </section>
+
+                <section class="section mining-section" id="miningSection">
+                    <div class="section-header">
+                        <h2>Khoáng mạch</h2>
+                    </div>
+                    <div class="config-stack">
+                        <div class="config-row">
+                            <label for="mineType">Loại mỏ</label>
+                            <select id="mineType">
+                                <option value="gold">Thượng phẩm · Vàng</option>
+                                <option value="silver" selected>Trung phẩm · Bạc</option>
+                                <option value="copper">Hạ phẩm · Đồng</option>
+                            </select>
+                            <button class="btn btn-check" id="checkMinesBtn" type="button">Tải mỏ</button>
+                        </div>
+                        <div class="config-row">
+                            <label for="mineSelect">Chọn mỏ</label>
+                            <select id="mineSelect" disabled>
+                                <option value="">Chưa tải danh sách</option>
+                            </select>
+                        </div>
+                        <p class="config-hint" id="mineHint">Chọn loại mỏ, rồi bấm Tải mỏ.</p>
+                    </div>
+                </section>
+
+                <section class="section mecung-section" id="mecungSection">
+                    <div class="section-header">
+                        <h2>Mê cung</h2>
+                    </div>
+                    <div class="config-stack">
+                        <div class="config-row">
+                            <label for="mcMinPlayers">Số người</label>
+                            <select id="mcMinPlayers">
+                                <option value="1">1 người</option>
+                                <option value="2">2 người</option>
+                                <option value="3">3 người</option>
+                                <option value="4">4 người</option>
+                                <option value="5" selected>5 người</option>
+                            </select>
+                        </div>
+                        <div class="config-row">
+                            <label for="mcRole">Vai trò</label>
+                            <select id="mcRole">
+                                <option value="host">Chủ phòng</option>
+                                <option value="member" selected>Thành viên</option>
+                            </select>
+                        </div>
+                        <div class="config-row">
+                            <label for="mcMaxCap">Tinh thạch</label>
+                            <input type="number" id="mcMaxCap" placeholder="Tự nhận theo VIP" min="100" max="2000" step="50">
+                        </div>
+                    </div>
+                </section>
+
+                <section class="section luyen-dan-section" id="luyenDanSection">
+                    <div class="section-header">
+                        <h2>Luyện đan</h2>
+                    </div>
+                    <div class="config-stack">
+                        <div class="config-row">
+                            <label for="ldTargetTier">Phẩm luyện</label>
+                            <select id="ldTargetTier">
+                                <option value="auto" selected>Phẩm cao nhất</option>
+                                <option value="cuc">Cực phẩm</option>
+                                <option value="thuong">Thượng phẩm</option>
+                                <option value="trung">Trung phẩm</option>
+                                <option value="ha">Hạ phẩm</option>
+                            </select>
+                        </div>
+                        <label class="check-row" for="ldAutoDecompose">
+                            <input type="checkbox" id="ldAutoDecompose">
+                            <span>Tự phân giải khi túi đầy</span>
+                        </label>
+                        <div class="config-row" id="ldDecomposeTierRow">
+                            <label for="ldDecomposeTier">Phẩm phân giải</label>
+                            <select id="ldDecomposeTier">
+                                <option value="ha" selected>Hạ phẩm</option>
+                                <option value="trung">Trung phẩm</option>
+                                <option value="thuong">Thượng phẩm</option>
+                                <option value="cuc">Cực phẩm</option>
+                            </select>
+                        </div>
+                        <div class="config-row" id="ldDecomposeStarsRow">
+                            <label for="ldDecomposeStars">Sao phân giải</label>
+                            <select id="ldDecomposeStars">
+                                <option value="1-2" selected>1 sao và 2 sao</option>
+                                <option value="1">Chỉ 1 sao</option>
+                                <option value="2">Chỉ 2 sao</option>
+                                <option value="3">Chỉ 3 sao</option>
+                                <option value="1-3">1 sao đến 3 sao</option>
+                                <option value="all">Mọi sao</option>
+                            </select>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <div class="right-column">
+                <section class="section controls-section">
+                    <button class="btn btn-primary btn-large" id="startBtn" type="button">
+                        <span class="btn-icon" aria-hidden="true"></span>
+                        Bắt đầu
+                    </button>
+                    <button class="btn btn-danger btn-large" id="stopBtn" type="button" disabled>
+                        <span class="btn-icon" aria-hidden="true"></span>
+                        Dừng
+                    </button>
+                </section>
+
+                <section class="section log-section">
+                    <div class="section-header">
+                        <h2>Nhật ký</h2>
+                        <button class="btn btn-small" id="clearLogBtn" type="button">Xóa</button>
+                    </div>
+                    <div class="log-container" id="logContainer">
+                        <p class="log-empty">Chưa có nhật ký.</p>
+                    </div>
+                </section>
+            </div>
+        </div>
+
+        <footer class="footer">
+            <span>Thần Vực</span>
+            <span class="separator" aria-hidden="true"></span>
+            <span id="currentTime"></span>
+        </footer>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
