@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Chạch maze 1.5.2
+// @name         Chạch maze 1.5.3
 // @namespace    https://github.com/Sakute287/HH3D
-// @version      1.5.2
+// @version      1.5.3
 // @include      https://hoathinh3d.you/me-cung
 // @grant       none
 // @run-at      document-idle
@@ -11,8 +11,8 @@
     'use strict';
 
     const LOG = '[HH3D Mê Cung Auto]';
-    const CHECK_INTERVAL = 300;
-    const ACTION_COOLDOWN = 700;
+    const CHECK_INTERVAL = 1000;
+    const ACTION_COOLDOWN = 1000;
 
     const STORAGE_KEYS = {
         requiredPlayers: 'hh3d_maze_required_players',
@@ -577,7 +577,7 @@ function ensureConfigUI() {
     rowKickDelay.style.padding = '4px 0';
 
     const labelDelay = document.createElement('label');
-    labelDelay.textContent = 'Thời gian chờ trực xuất';
+    labelDelay.textContent = 'Thời gian chờ trục xuất';
     labelDelay.style.color = '#f0f0f0';
     labelDelay.style.fontWeight = '600';
 
@@ -597,7 +597,7 @@ function ensureConfigUI() {
     delayInput.addEventListener('change', () => {
         settings.idleKickSeconds = clampInt(delayInput.value, 1, 60, DEFAULT_SETTINGS.idleKickSeconds);
         saveSettings();
-        console.log(`${LOG} ⏱️ Thời gian chờ trực xuất: ${settings.idleKickSeconds}s`);
+        console.log(`${LOG} ⏱️ Thời gian chờ trục xuất: ${settings.idleKickSeconds}s`);
     });
 
     rowKickDelay.appendChild(labelDelay);
@@ -779,12 +779,40 @@ function ensureConfigUI() {
 
     function start() {
         console.log(`${LOG} 🚀 Đã khởi động.`);
-        const RELOAD_INTERVAL = 15 * 60 * 1000; // 15 phút
+        // Không reload theo chu kỳ cố định; chỉ reload khi phát hiện phiên đăng nhập hết hạn.
+        const SESSION_RELOAD_KEY = 'hh3d_maze_session_reload_attempted';
 
-setTimeout(() => {
-    console.log(`${LOG} 🔄 Đã đủ 15 phút, tự động tải lại trang.`);
-    window.location.reload();
-}, RELOAD_INTERVAL);
+        function isLoginExpired() {
+            const loginUrl = /(?:login|dang-nhap|sign-in|signin|auth)(?:[/?#]|$)/i.test(window.location.href);
+
+            const visiblePasswordField = [...document.querySelectorAll(
+                'input[type="password"], input[name*="password" i], input[autocomplete="current-password"]'
+            )].some(el => isVisible(el));
+
+            const pageText = normalizeText(document.body?.innerText || '');
+            const expiredMessage =
+                pageText.includes('phien dang nhap da het han') ||
+                pageText.includes('phien dang nhap het han') ||
+                pageText.includes('vui long dang nhap lai') ||
+                pageText.includes('vui long dang nhap de tiep tuc');
+
+            return loginUrl || visiblePasswordField || expiredMessage;
+        }
+
+        function checkSessionAndReload() {
+            if (isLoginExpired()) {
+                // Chặn vòng lặp reload nếu trang đăng nhập vẫn còn sau khi tải lại.
+                if (sessionStorage.getItem(SESSION_RELOAD_KEY) === '1') return;
+                sessionStorage.setItem(SESSION_RELOAD_KEY, '1');
+                console.warn(`${LOG} 🔒 Phát hiện phiên đăng nhập có thể đã hết hạn; tải lại trang một lần.`);
+                window.location.reload();
+            } else {
+                // Cho phép lần phát hiện hết phiên tiếp theo được reload một lần.
+                sessionStorage.removeItem(SESSION_RELOAD_KEY);
+            }
+        }
+
+        checkSessionAndReload();
         ensureConfigUI();
 
         const observer = new MutationObserver(() => {
@@ -799,6 +827,7 @@ setTimeout(() => {
         });
 
         setInterval(() => {
+            checkSessionAndReload();
             if (scriptEnabled) runStateMachine();
         }, CHECK_INTERVAL);
 
