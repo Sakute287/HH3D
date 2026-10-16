@@ -1,0 +1,958 @@
+// ==UserScript==
+// @name         Perfect Sakute
+// @namespace    hh3d.me-cung.automation
+// @version      2.9.0
+// @description  Perfect, Farm cỏ và Farm; auto tiếp tục chạy khi thu gọn panel
+// @include        https://hoathinh3d.*/me-cung*
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+
+(() => {
+  'use strict';
+  if (window.__HH3D_ME_CUNG_AUTO__) return;
+  window.__HH3D_ME_CUNG_AUTO__ = true;
+
+  const $ = (s, root = document) => root.querySelector(s);
+  const $$ = (s, root = document) => [...root.querySelectorAll(s)];
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const norm = s => (s || '').normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase();
+  const visible = el => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const textOf = el => norm(el?.innerText || el?.textContent || '');
+  const words = {
+    difficulty: ['thường', 'khó', 'ác mộng'],
+    elements: ['kim', 'mộc', 'thủy', 'hỏa', 'thổ']
+  };
+
+  const ROOM_SETTINGS_KEY = 'hh3d_maze_config_v2';
+  const ROOM_DEFAULTS = { requiredPlayers: 5, autoKickIdle: true, idleKickSeconds: 5 };
+  let roomSettings = { ...ROOM_DEFAULTS };
+  try {
+    const savedRoom = JSON.parse(localStorage.getItem(ROOM_SETTINGS_KEY) || '{}');
+    roomSettings = { ...ROOM_DEFAULTS, ...savedRoom };
+    roomSettings.requiredPlayers = clampInt(roomSettings.requiredPlayers, 1, 5, 5);
+    roomSettings.idleKickSeconds = clampInt(roomSettings.idleKickSeconds, 1, 60, 5);
+    roomSettings.autoKickIdle = !!roomSettings.autoKickIdle;
+  } catch (_) {}
+  const idleKickTracker = new WeakMap();
+  const ROOM_PLAYER_SELECTORS = [
+    '.room-member','.member-item','.player-item','.room-user','.user-item',
+    '.lobby-player','.player-card','.char-card','.member','.room-players .item',
+    '.players .item','.player-list .item','.member-list .member','.user-list .user'
+  ];
+  const ROOM_COUNT_SELECTORS = [
+    '#room-player-count','#player-count','.room-player-count','.player-count',
+    '.room-member-count','.member-count','.room-count','.room-user-count'
+  ];
+  function clampInt(value, min, max, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.min(Math.max(Math.round(n), min), max) : fallback;
+  }
+  function saveRoomSettings() {
+    localStorage.setItem(ROOM_SETTINGS_KEY, JSON.stringify(roomSettings));
+  }
+
+  const state = {
+    running: false, paused: false, busy: false, mode: 'full',
+    difficulty: '', stage: 0, lastAction: '', lastActionAt: 0,
+    seenStage: '', startedAt: 0, log: [], stoppedReason: '',
+    farmElements: ['Kim', 'Mộc', 'Thủy', 'Hỏa', 'Thổ'],
+    stageDone: new Set(), retryAfter: 0, lastStartAt: 0, lastCombatStage: 0, farmScanUntil: 0, farmScanStage: 0, perfectStage: 1, perfectRewardHandled: false, deadRetreatPending: false
+  };
+
+  const panel = document.createElement('section');
+  panel.id = 'hh3d-mc-auto-panel';
+  panel.innerHTML = `
+    <header class="mc-head"><b>🧭 Mê Cung Auto</b><button id="mc-min" title="Thu gọn">−</button></header>
+    <div id="mc-body">
+      <label>Chế độ chạy
+        <select id="mc-mode">
+          <option value="full">Perfect — Ác mộng → Khó → Thường</option>
+          <option value="grass">Farm cỏ — chọn hệ boss từng ải</option>
+          <option value="farm">Farm — chạy liên tục, giữ nguyên độ khó</option>
+        </select>
+      </label>
+      <div id="mc-elements">
+        <div class="mc-subtitle">Hệ boss cần đánh theo từng ải</div>
+        <div class="mc-element-grid">
+          ${[1,2,3,4,5].map((n) => `<label>Ải ${n}<select data-stage="${n}">${words.elements.map(e=>`<option>${e[0].toUpperCase()+e.slice(1)}</option>`).join('')}</select></label>`).join('')}
+        </div>
+        <p class="mc-note">Đúng hệ: đánh. Khác hệ: đầu hàng (cần xác nhận). Ải hoàn thành sẽ được bỏ qua.</p>
+      </div>
+      <div class="mc-room-settings">
+        <label>Người tối thiểu để bắt đầu
+          <select id="mc-required-players">${[1,2,3,4,5].map(n=>`<option value="${n}">${n}</option>`).join('')}</select>
+        </label>
+        <label class="mc-room-toggle">Trục xuất người chưa sẵn sàng
+          <button id="mc-kick-toggle" type="button">BẬT</button>
+        </label>
+        <label>Thời gian chờ trục xuất (giây)
+          <input id="mc-kick-delay" type="number" min="1" max="60" value="5">
+        </label>
+      </div>
+      <div class="mc-status"><span>Trạng thái</span><b id="mc-status">Đang chờ</b></div>
+      <div class="mc-status"><span>Độ khó</span><b id="mc-diff">Chưa xác định</b></div>
+      <div class="mc-status"><span>Ải / hệ boss</span><b id="mc-stage">—</b></div>
+      <div class="mc-status"><span>Thời gian</span><b id="mc-time">00:00</b></div>
+      <div class="mc-buttons">
+        <button id="mc-start" class="primary">▶ Auto</button>
+        <button id="mc-pause">⏸ Tạm dừng</button>
+        <button id="mc-stop" class="danger">■ Dừng</button>
+      </div>
+      <div class="mc-subtitle">Nhật ký</div><div id="mc-log" aria-live="polite"></div>
+      <div class="mc-note">Farm cỏ: đầu hàng ngay khi sai hệ; khoảng cách bắt đầu tối thiểu 11 giây. Ải đã hoàn thành trong lượt này không đầu hàng.</div>
+    </div>`;
+  document.body.appendChild(panel);
+
+  const style = document.createElement('style');
+  style.textContent = `
+    #hh3d-mc-auto-panel{position:fixed;z-index:2147483646;right:16px;top:90px;width:330px;max-height:82vh;overflow:auto;background:#100c22;color:#eee8ff;border:1px solid #7944bd;border-radius:14px;box-shadow:0 10px 40px #0009;font:13px/1.45 system-ui,sans-serif}
+    #hh3d-mc-auto-panel *{box-sizing:border-box} #hh3d-mc-auto-panel .mc-head{display:flex;align-items:center;justify-content:space-between;padding:11px 13px;background:#24113c;border-radius:13px 13px 0 0;font-size:15px}
+    #hh3d-mc-auto-panel button,#hh3d-mc-auto-panel select{font:inherit;color:inherit;background:#211735;border:1px solid #61418e;border-radius:8px;padding:7px 9px}
+    #hh3d-mc-auto-panel button{cursor:pointer} #hh3d-mc-auto-panel button:hover{filter:brightness(1.2)}
+    #hh3d-mc-auto-panel #mc-body{padding:12px;display:grid;gap:10px} #hh3d-mc-auto-panel #mc-body>label{display:grid;gap:5px}
+    #hh3d-mc-auto-panel select{width:100%;min-width:0} #hh3d-mc-auto-panel .mc-element-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}
+    #hh3d-mc-auto-panel .mc-element-grid label{font-size:11px;display:grid;gap:4px} #hh3d-mc-auto-panel .mc-element-grid select{padding:5px 2px}
+    #hh3d-mc-auto-panel .mc-room-settings{display:grid;gap:8px;padding:9px;background:#1b142b;border-radius:8px}
+    #hh3d-mc-auto-panel .mc-room-settings label{display:flex;align-items:center;justify-content:space-between;gap:8px}
+    #hh3d-mc-auto-panel .mc-room-settings select,#hh3d-mc-auto-panel .mc-room-settings input{width:76px}
+    #hh3d-mc-auto-panel #mc-kick-toggle{background:#16834a}
+    #hh3d-mc-auto-panel .mc-subtitle{font-weight:700;color:#d4adff;margin-top:2px} #hh3d-mc-auto-panel .mc-note{font-size:11px;color:#b9accd;margin:0}
+    #hh3d-mc-auto-panel .mc-status{display:flex;justify-content:space-between;gap:8px;padding:6px 8px;background:#1b142b;border-radius:7px}
+    #hh3d-mc-auto-panel .mc-status span{color:#b9accd} #hh3d-mc-auto-panel .mc-status b{text-align:right}
+    #hh3d-mc-auto-panel .mc-buttons{display:grid;grid-template-columns:1fr 1fr;gap:6px} #hh3d-mc-auto-panel .primary{background:#7040e8;border-color:#9268ff;font-weight:700}
+    #hh3d-mc-auto-panel .danger{background:#70202b;border-color:#b33c4a} #hh3d-mc-auto-panel #mc-log{max-height:145px;overflow:auto;background:#0b0815;border-radius:8px;padding:8px;font-size:11px;white-space:normal}
+    #hh3d-mc-auto-panel .log-line{padding:3px 0;border-bottom:1px solid #241a35} #hh3d-mc-auto-panel .good{color:#6de6a4} #hh3d-mc-auto-panel .warn{color:#ffca74}
+    #hh3d-mc-auto-panel.mc-collapsed{width:220px;max-height:none;overflow:visible} #hh3d-mc-auto-panel.mc-collapsed #mc-body{display:none} #hh3d-mc-auto-panel.mc-collapsed .mc-head{border-radius:13px}
+  `;
+  document.head.appendChild(style);
+
+  const ui = {
+    mode: $('#mc-mode', panel), elements: $('#mc-elements', panel),
+    status: $('#mc-status', panel), diff: $('#mc-diff', panel),
+    stage: $('#mc-stage', panel), time: $('#mc-time', panel), log: $('#mc-log', panel)
+  };
+  function initRoomSettingsUI() {
+    const required = $('#mc-required-players', panel);
+    const kick = $('#mc-kick-toggle', panel);
+    const delay = $('#mc-kick-delay', panel);
+    required.value = String(roomSettings.requiredPlayers);
+    delay.value = String(roomSettings.idleKickSeconds);
+    const paintKick = () => {
+      kick.textContent = roomSettings.autoKickIdle ? 'BẬT' : 'TẮT';
+      kick.style.background = roomSettings.autoKickIdle ? '#16834a' : '#4d5560';
+    };
+    paintKick();
+    required.addEventListener('change', () => {
+      roomSettings.requiredPlayers = clampInt(required.value, 1, 5, 5);
+      saveRoomSettings();
+      log(`Số người tối thiểu để bắt đầu: ${roomSettings.requiredPlayers}`);
+    });
+    kick.addEventListener('click', () => {
+      roomSettings.autoKickIdle = !roomSettings.autoKickIdle;
+      saveRoomSettings(); paintKick();
+      log(`Tự trục xuất người chưa sẵn sàng: ${roomSettings.autoKickIdle ? 'BẬT' : 'TẮT'}`);
+    });
+    delay.addEventListener('change', () => {
+      roomSettings.idleKickSeconds = clampInt(delay.value, 1, 60, 5);
+      delay.value = String(roomSettings.idleKickSeconds);
+      saveRoomSettings();
+      log(`Thời gian chờ trục xuất: ${roomSettings.idleKickSeconds}s`);
+    });
+  }
+  function isVisibleRoomElement(el) {
+    return !!el && !el.hidden && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+      && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
+  }
+  function roomPlayerCount() {
+    for (const selector of ROOM_COUNT_SELECTORS) {
+      const el = $(selector);
+      if (!isVisibleRoomElement(el)) continue;
+      const m = String(el.textContent || el.value || el.innerText || '').match(/\\d+/);
+      if (m) return Number(m[0]);
+    }
+    let count = 0;
+    for (const selector of ROOM_PLAYER_SELECTORS) {
+      const nodes = $$(selector).filter(isVisibleRoomElement);
+      count = Math.max(count, nodes.length);
+    }
+    return count;
+  }
+  function isUnreadyRow(row) {
+    const t = norm(row?.innerText || row?.textContent || '');
+    return /chưa|chua|chờ sẵn sàng|cho san sang|not ready|waiting|đang chờ|dang cho|idle/.test(t);
+  }
+  function findKickButton(row) {
+    const selectors = '.kick-btn,.btn-kick,.kick-player,.member-kick,.player-kick,.remove-user,.btn-remove,.icon-kick,[data-action="kick"],[data-role="kick"],[title*="kick" i],[title*="trục xuất" i],[title*="truc xuat" i],.btn-delete,button,a,[role="button"]';
+    return $$(selectors, row).find(el => {
+      if (!isVisibleRoomElement(el)) return false;
+      const t = norm(`${el.textContent||''} ${el.getAttribute('title')||''} ${el.getAttribute('aria-label')||''}`);
+      return /trục xuất|truc xuat|kick|remove|loại|loai/.test(t);
+    });
+  }
+  function handleUnreadyPlayers() {
+    const rows = [...new Set(ROOM_PLAYER_SELECTORS.flatMap(sel => $$(sel)))].filter(isVisibleRoomElement);
+    let unready = 0;
+    for (const row of rows) {
+      if (!isUnreadyRow(row)) { idleKickTracker.delete(row); continue; }
+      unready++;
+      if (!roomSettings.autoKickIdle) continue;
+      const now = Date.now();
+      if (!idleKickTracker.has(row)) {
+        idleKickTracker.set(row, now);
+        log(`Phát hiện người chưa sẵn sàng; bắt đầu đếm ${roomSettings.idleKickSeconds}s.`);
+        continue;
+      }
+      if ((now - idleKickTracker.get(row)) / 1000 < roomSettings.idleKickSeconds) continue;
+      const btn = findKickButton(row);
+      if (btn) {
+        btn.click(); idleKickTracker.delete(row);
+        log(`Đã trục xuất người chưa sẵn sàng sau ${roomSettings.idleKickSeconds}s.`, 'warn');
+        return { unready, kicked: true };
+      }
+    }
+    return { unready, kicked: false };
+  }
+
+  initRoomSettingsUI();
+
+  function log(message, kind = '') {
+    const time = new Date().toLocaleTimeString();
+    state.log.unshift({time, message, kind});
+    state.log = state.log.slice(0, 60);
+    ui.log.innerHTML = state.log.map(x => `<div class="log-line ${x.kind}">${x.time} — ${escapeHtml(x.message)}</div>`).join('');
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function setStatus(s) { ui.status.textContent = s; }
+  function getVisibleText() { return norm(document.body?.innerText || ''); }
+
+  function findClickable(re, scope = document) {
+    const candidates = $$('button,[role="button"],a,input[type="button"],input[type="submit"]', scope).filter(visible);
+    return candidates.find(el => re.test(textOf(el) || norm(el.getAttribute('aria-label')) || norm(el.value)));
+  }
+  function click(el, description) {
+    if (!el || !visible(el)) return false;
+    el.click();
+    state.lastAction = description;
+    state.lastActionAt = Date.now();
+    log(`Đã bấm: ${description}`, 'warn');
+    return true;
+  }
+  function autoAttackControl() {
+    // Giao diện hiện tại hiển thị nhãn "TỰ ĐỘNG" cạnh công tắc dạng viên thuốc.
+    // Tìm phần tử nhãn trước, sau đó ưu tiên công tắc/nút nằm cùng cụm giao diện.
+    const all = $$('body *').filter(el => el !== panel && !panel.contains(el) && visible(el));
+    const label = all
+      .filter(el => /^(tự động|auto\s*attack|autoattack|tự động chiến đấu)$/.test(norm(textOf(el))) && el.children.length <= 2)
+      .sort((a, b) => (a.innerText || a.textContent || '').length - (b.innerText || b.textContent || '').length)[0];
+    if (label) {
+      let parent = label;
+      for (let depth = 0; depth < 4 && parent && parent !== document.body; depth++, parent = parent.parentElement) {
+        const toggles = $$('button,[role="switch"],[role="checkbox"],input[type="checkbox"],label,[tabindex], [class*="switch"], [class*="toggle"]', parent)
+          .filter(el => el !== label && visible(el));
+        if (toggles.length) {
+          // Công tắc thực tế thường là phần tử nhỏ nằm bên phải nhãn.
+          const rightSide = toggles.filter(el => el.getBoundingClientRect().left >= label.getBoundingClientRect().left);
+          const pool = rightSide.length ? rightSide : toggles;
+          return pool.sort((a, b) => {
+            const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+            return (ar.width * ar.height) - (br.width * br.height);
+          })[0];
+        }
+      }
+      // Nếu không tìm thấy công tắc con, bấm cụm nhãn nhỏ nhất có thể tương tác.
+      const clickable = label.closest('button,[role="button"],label,[tabindex]');
+      if (clickable && clickable !== panel && !panel.contains(clickable)) return clickable;
+    }
+    const candidates = all.filter(el => /tự động|auto\s*attack|autoattack|tự động chiến đấu/i.test(
+      [textOf(el), el.getAttribute('aria-label') || '', el.getAttribute('title') || ''].join(' ')
+    ));
+    return candidates.sort((a, b) => (a.innerText || a.textContent || '').length - (b.innerText || b.textContent || '').length)[0] || null;
+  }
+  function autoAttackIsOn(el) {
+    if (!el) return false;
+    const nodes = [el, ...$$('*', el)].slice(0, 80);
+    for (const node of nodes) {
+      const ariaChecked = node.getAttribute?.('aria-checked');
+      const ariaPressed = node.getAttribute?.('aria-pressed');
+      if (ariaChecked === 'true' || ariaPressed === 'true') return true;
+      if (node.matches?.('input[type="checkbox"]') && node.checked) return true;
+      const cls = norm(typeof node.className === 'string' ? node.className : '');
+      if (/(^|\s)(active|enabled|on|checked|is-on|toggle-on)(\s|$)/.test(cls)) return true;
+      // Kiểm tra màu nền xanh của công tắc đang bật (như ảnh người dùng gửi).
+      try {
+        const bg = getComputedStyle(node).backgroundColor;
+        const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+        if (m) {
+          const r = +m[1], g = +m[2], b = +m[3];
+          if (g > 100 && g > r * 1.25 && g > b * 1.05) return true;
+        }
+      } catch (_) {}
+    }
+    const label = norm([textOf(el), el.getAttribute('aria-label') || '', el.getAttribute('title') || ''].join(' '));
+    return /đang tự động|tắt tự động|auto\s*attack\s*on|autoattack\s*on|dừng tự động/.test(label);
+  }
+  function stopAutoAttackForScan() {
+    const control = autoAttackControl();
+    if (control && autoAttackIsOn(control)) {
+      click(control, 'Tắt AutoAttack để dò hệ boss');
+      return true;
+    }
+    return false;
+  }
+  function currentDifficulty() {
+    const t = getVisibleText();
+    // Tránh đọc nhầm các lựa chọn trong panel; chỉ dùng nhãn hiển thị ngoài panel.
+    const outside = norm(document.body.innerText.replace(panel.innerText, ''));
+    if (/độ khó.{0,20}ác mộng|ác mộng/.test(outside)) return 'Ác Mộng';
+    if (/độ khó.{0,20}khó|độ khó phòng.{0,20}khó/.test(outside)) return 'Khó';
+    if (/độ khó.{0,20}thường|độ khó phòng.{0,20}thường/.test(outside)) return 'Thường';
+    const m = outside.match(/độ khó\s*([^\n]+)/);
+    if (m) {
+      const v = m[1];
+      if (v.includes('ác mộng')) return 'Ác Mộng';
+      if (v.includes('khó')) return 'Khó';
+      if (v.includes('thường')) return 'Thường';
+    }
+    return '';
+  }
+  function currentStage() {
+    // Game hiển thị nhãn tiến trình dạng "Ải 4/5" (như giao diện trong ảnh).
+    // Ưu tiên mẫu này trước các mẫu tổng quát để tránh đọc nhầm số ải trong nội dung khác.
+    const raw = (document.body?.innerText || '').replace(panel.innerText, '');
+    const t = norm(raw);
+    const explicit = t.match(/\bải\s*#?\s*([1-5])\s*\/\s*5\b/i);
+    if (explicit) return Number(explicit[1]);
+
+    const patterns = [
+      /(?:ải|tầng|stage|phòng)\s*#?\s*([1-5])\b/i,
+      /\b([1-5])\s*\/\s*5\s*(?:ải|tầng|boss)?/i
+    ];
+    for (const p of patterns) { const m = t.match(p); if (m) return Number(m[1]); }
+    return 0;
+  }
+  function currentBossElement() {
+    // Đọc hệ boss theo nhiều kiểu nhãn, không phụ thuộc đúng một chuỗi
+    // "Ngũ hành boss: ...". Ưu tiên văn bản có ngữ cảnh boss/hệ/ngũ hành.
+    const outsideRaw = document.body?.innerText || '';
+    const outside = norm(outsideRaw.replace(panel.innerText, ''));
+    const elements = [
+      ['Kim', /\bkim\b/i],
+      ['Mộc', /\bmộc\b/i],
+      ['Thủy', /\bthủy\b/i],
+      ['Hỏa', /\bhỏa\b/i],
+      ['Thổ', /\bthổ\b/i]
+    ];
+
+    const patterns = [
+      /ngũ hành\s*boss\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)\b/i,
+      /boss\s*(?:ngũ hành|hệ)?\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)\b/i,
+      /(?:hệ|ngũ hành)\s*(?:của\s*)?boss\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)\b/i,
+      /(?:thuộc|hệ)\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)\s*(?:hành)?\s*boss\b/i
+    ];
+    for (const re of patterns) {
+      const m = outside.match(re);
+      if (m) return m[1][0].toUpperCase() + m[1].slice(1);
+    }
+
+    // Một số giao diện tách nhãn và giá trị thành các phần tử DOM riêng.
+    const candidates = $$('body *').filter(el =>
+      el !== panel && !panel.contains(el) && visible(el) &&
+      el.children.length <= 2
+    );
+    for (const el of candidates) {
+      const label = norm([
+        el.innerText, el.textContent, el.getAttribute('aria-label'),
+        el.getAttribute('title'), el.getAttribute('alt'),
+        el.getAttribute('data-testid'), el.className
+      ].filter(Boolean).join(' '));
+      if (!/(boss|ngũ hành|thuộc tính|hệ)/i.test(label)) continue;
+      for (const [name, re] of elements) {
+        if (re.test(label)) return name;
+      }
+    }
+
+    // Thử thuộc tính ảnh/icon nằm trong vùng có nhắc đến boss.
+    const bossContainers = candidates.filter(el =>
+      /(boss|ngũ hành|thuộc tính|hệ)/i.test(norm(el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || ''))
+    );
+    for (const el of bossContainers) {
+      const nodes = [el, ...$$('img,[title],[aria-label],[alt]', el)];
+      for (const node of nodes) {
+        const meta = norm([
+          node.getAttribute?.('alt'), node.getAttribute?.('title'),
+          node.getAttribute?.('aria-label'), node.getAttribute?.('src'),
+          node.getAttribute?.('class')
+        ].filter(Boolean).join(' '));
+        for (const [name, re] of elements) {
+          if (re.test(meta)) return name;
+        }
+      }
+    }
+    return '';
+  }
+  function isCombat() {
+    const t = norm((document.body?.innerText || '').replace(panel.innerText, ''));
+    return !!currentBossElement() ||
+      /đầu hàng|trạng thái:\s*(bình thường|đang chiến đấu)|liệt điểm ma cung|đang chiến đấu/.test(t);
+  }
+  function isRewardScreen() {
+    const t = getVisibleText().replace(norm(panel.innerText), '');
+    // Full chỉ xử lý màn xác nhận sau khi game đã ghi nhận phần thưởng.
+    if (state.mode === 'full') {
+      return /thưởng vật phẩm hôm nay đã nhận/.test(t) &&
+        /đội hình đã vượt qua 5 ải|chinh phục mê cung/.test(t) &&
+        /quay về sảnh/.test(t);
+    }
+    if (state.mode === 'grass') {
+      return /bấm vào rương để nhận thưởng|thưởng vật phẩm hôm nay đã nhận/.test(t) &&
+        /chinh phục mê cung|đội hình đã vượt qua 5 ải/.test(t);
+    }
+    return /nhận thưởng|rương.*(?:cuối|phần thưởng)|chúc mừng.*(?:hoàn thành|chiến thắng)|hoàn thành.*mê cung|phần thưởng/.test(t);
+  }
+  function hasConfirmation() {
+    const t = getVisibleText().replace(norm(panel.innerText), '');
+    return /xác nhận hành động|xác nhận đầu hàng|bắt đầu chinh phục mê cung/.test(t);
+  }
+  function confirmIfNeeded() {
+    const t = getVisibleText().replace(norm(panel.innerText), '');
+    if (/xác nhận đầu hàng/.test(t)) {
+      // Farm: xác nhận đầu hàng để thoát lượt và quay về sảnh chạy vòng mới.
+      if (state.mode === 'farm') return click(findClickable(/^xác nhận$/i), 'Farm: xác nhận đầu hàng');
+      // Perfect: chỉ tự xác nhận đầu hàng khi đang ở giai đoạn Ác mộng và boss hệ Kim.
+      if (state.mode === 'full' && state.perfectStage === 1 && currentBossElement() === 'Kim') {
+        return click(findClickable(/^xác nhận$/i), 'Perfect giai đoạn 1: xác nhận đầu hàng boss Kim');
+      }
+      // Chỉ xác nhận đầu hàng nếu chế độ Farm cỏ và boss sai hệ.
+      if (state.mode === 'grass' && isCombat()) {
+        const stage = currentStage();
+        const expected = state.farmElements[stage - 1];
+        const boss = currentBossElement();
+        if (stage >= 1 && stage <= 5 && boss && expected && boss.toLowerCase() !== expected.toLowerCase()) {
+          return click(findClickable(/^xác nhận$/i), 'Xác nhận đầu hàng (khác hệ)');
+        }
+      }
+      log('Đang có hộp xác nhận đầu hàng; không tự xác nhận để tránh thao tác nhầm.', 'warn');
+      setStatus('Chờ xác nhận an toàn');
+      return false;
+    }
+    // Hộp xác nhận bắt đầu dùng chung cho TẤT CẢ chế độ (Perfect, Farm cỏ, Farm).
+    if (/bắt đầu chinh phục mê cung/.test(t)) {
+      const confirmStart = findClickable(/^xác nhận$/i);
+      if (confirmStart) return click(confirmStart, `Xác nhận bắt đầu Mê Cung · ${state.mode}`);
+      return false;
+    }
+    if (state.mode === 'farm' && /xác nhận hành động/.test(t)) return click(findClickable(/^xác nhận$/i), 'Farm: xác nhận thao tác');
+    return false;
+  }
+  async function waitWhilePaused() {
+    while (state.running && state.paused) await sleep(250);
+  }
+  async function safeAction(fn) {
+    if (!state.running || state.paused || state.busy || Date.now() < state.retryAfter) return;
+    state.busy = true;
+    try { await fn(); } catch (e) { log(`Lỗi: ${e?.message || e}`, 'warn'); }
+    finally { state.busy = false; }
+  }
+
+  async function chooseDifficulty(name) {
+    const text = getVisibleText().replace(norm(panel.innerText), '');
+    if (isCombat() || /đang chiến đấu|combat/.test(text)) {
+      log('Không đổi độ khó khi đang trong ải.', 'warn'); return false;
+    }
+    const change = findClickable(/đổi/i);
+    if (change) {
+      click(change, 'Mở đổi độ khó');
+      await sleep(400);
+    }
+    const option = findClickable(new RegExp('^' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i'));
+    if (option) {
+      click(option, `Chọn độ khó ${name}`);
+      await sleep(350);
+      // Một số giao diện yêu cầu xác nhận riêng sau khi chọn độ khó.
+      const bodyAfterSelect = getVisibleText().replace(norm(panel.innerText), '');
+      if (/xác nhận.{0,25}(?:độ khó|thay đổi)|thay đổi.{0,25}độ khó/i.test(bodyAfterSelect)) {
+        const confirmDifficulty = findClickable(/^xác nhận$/i);
+        if (confirmDifficulty) {
+          click(confirmDifficulty, `Xác nhận thay đổi độ khó ${name}`);
+          await sleep(350);
+        }
+      }
+      const close = findClickable(/^đóng$/i);
+      if (close) click(close, 'Đóng hộp độ khó');
+      state.difficulty = name;
+      return true;
+    }
+    log(`Không tìm thấy lựa chọn độ khó "${name}". Hãy kiểm tra giao diện.`, 'warn');
+    return false;
+  }
+
+  async function handleLobby() {
+    // Đã rời màn rương; cho phép xử lý rương của chu trình kế tiếp.
+    state.perfectRewardHandled = false;
+    const mode = state.mode;
+    const desired = mode === 'full' ? (state.perfectStage === 1 ? 'Ác Mộng' : state.perfectStage === 2 ? 'Khó' : 'Thường') : mode === 'grass' ? 'Khó' : '';
+    // Farm tuyệt đối không mở/chọn độ khó; chỉ tự bắt đầu ở độ khó hiện tại.
+    const actual = currentDifficulty();
+    ui.diff.textContent = actual || (mode === 'farm' ? 'Giữ độ khó hiện tại' : desired) || 'Chưa xác định';
+    if (mode !== 'farm' && actual && actual !== desired) {
+      await chooseDifficulty(desired);
+      await sleep(500);
+      return;
+    }
+    if (mode !== 'farm' && !actual && !state.difficulty) {
+      log('Chưa nhận diện được độ khó đang chọn; tạm dừng để tránh chạy sai.', 'warn');
+      setStatus('Không nhận diện được độ khó'); state.running = false; return;
+    }
+    const start = findClickable(/^bắt đầu$/i);
+    if (start) {
+      const players = roomPlayerCount();
+      const readiness = handleUnreadyPlayers();
+      if (readiness.kicked) return;
+      if (players > 0 && players < roomSettings.requiredPlayers) {
+        setStatus(`Đợi đủ người: ${players}/${roomSettings.requiredPlayers}`);
+        return;
+      }
+      if (readiness.unready > 0) {
+        setStatus(`Đợi ${readiness.unready} người sẵn sàng`);
+        return;
+      }
+      // Farm cỏ: bảo đảm cách nhau hơn 10 giây giữa hai lần bắt đầu mê cung.
+      if (mode === 'grass' || mode === 'farm') {
+        const waitMs = 11001 - (Date.now() - state.lastStartAt);
+        if (state.lastStartAt && waitMs > 0) {
+          setStatus(`Chờ ${Math.ceil(waitMs / 1000)}s trước khi dò ải tiếp`);
+          state.retryAfter = Date.now() + waitMs;
+          return;
+        }
+      }
+      state.lastStartAt = Date.now();
+      click(start, `Bắt đầu Mê Cung · ${mode}`);
+      // Modal xác nhận có thể xuất hiện trễ; dò lại vài lần thay vì chỉ kiểm tra một lần.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await sleep(300);
+        const bodyText = getVisibleText().replace(norm(panel.innerText), '');
+        if (/bắt đầu chinh phục mê cung/.test(bodyText)) {
+          const confirm = findClickable(/^xác nhận$/i);
+          if (confirm) { click(confirm, `Xác nhận bắt đầu Mê Cung · ${mode}`); break; }
+        }
+      }
+      setStatus('Đang vào ải');
+      await sleep(900);
+      return;
+    }
+    log('Đang chờ giao diện sảnh hoặc nút Bắt đầu.', 'warn');
+    state.retryAfter = Date.now() + 2500;
+  }
+
+  async function handleCombat() {
+    const stage = currentStage();
+    const boss = currentBossElement();
+    ui.stage.textContent = `${stage || '?'} / 5${boss ? ' · ' + boss : ''}`;
+    if (state.mode === 'full') {
+      // Perfect giai đoạn 1: gặp boss Kim thì đầu hàng ngay; không đổi giai đoạn
+      // cho đến khi đã nhận rương chinh phục thành công.
+      if (state.perfectStage === 1 && boss === 'Kim') {
+        setStatus('Perfect · Ác mộng: gặp boss Kim, đầu hàng để thử lại');
+        const abandon = findClickable(/đầu hàng/i);
+        if (abandon) {
+          const bodyText = getVisibleText().replace(norm(panel.innerText), '');
+          if (/xác nhận đầu hàng/.test(bodyText)) {
+            const confirm = findClickable(/^xác nhận$/i);
+            if (confirm) click(confirm, 'Perfect giai đoạn 1: xác nhận đầu hàng boss Kim');
+          } else {
+            click(abandon, 'Perfect giai đoạn 1: đầu hàng ngay khi gặp boss Kim');
+          }
+        }
+        return;
+      }
+      // Các trường hợp khác chiến đấu tự động. Nếu thất bại và quay về phòng mà chưa
+      // nhận rương, perfectStage giữ nguyên nên sẽ tự bắt đầu lại cùng giai đoạn.
+      const auto = autoAttackControl() || findClickable(/tự động/i);
+      if (auto && !autoAttackIsOn(auto)) click(auto, `Perfect giai đoạn ${state.perfectStage}: bật AutoAttack`);
+      setStatus(`Perfect · Giai đoạn ${state.perfectStage} — ${state.perfectStage === 1 ? 'Ác mộng' : state.perfectStage === 2 ? 'Khó' : 'Thường'}`);
+      return;
+    }
+    if (state.mode === 'grass') {
+      if (!stage || stage < 1 || stage > 5) {
+        setStatus('Đang dò số ải'); return;
+      }
+
+      // Khi thấy số ải tăng, ải trước đã được vượt qua. Ghi nhớ qua các lần đầu hàng
+      // và bắt đầu lại; chỉ xóa danh sách này khi nhận rương chinh phục cuối chu trình.
+      const previousStage = state.lastCombatStage;
+      if (previousStage >= 1 && previousStage < stage && !state.stageDone.has(previousStage)) {
+        state.stageDone.add(previousStage);
+        log(`Ghi nhớ ải ${previousStage} đã vượt qua; sẽ bỏ qua dò hệ ở lần bắt đầu lại.`, 'good');
+      }
+      state.lastCombatStage = stage;
+
+      // Ải đã vượt qua: không dò hệ và không đầu hàng, bật AutoAttack để đi tiếp.
+      if (state.stageDone.has(stage)) {
+        state.farmScanStage = 0;
+        setStatus(`Ải ${stage} đã hoàn thành trước đó; bỏ qua dò hệ`);
+        const auto = autoAttackControl();
+        if (auto && !autoAttackIsOn(auto)) click(auto, `Bật AutoAttack bỏ qua ải ${stage} đã hoàn thành`);
+        return;
+      }
+
+      // Mỗi lần gặp ải chưa hoàn thành: tắt AutoAttack và chờ đủ 0.5 giây để đọc nhãn boss.
+      if (state.farmScanStage !== stage) {
+        state.farmScanStage = stage;
+        state.farmScanUntil = Date.now() + 300;
+        stopAutoAttackForScan();
+        setStatus(`Tạm tắt AutoAttack · dò hệ boss 0.3 giây (ải ${stage})`);
+        log(`Ải ${stage}: tắt AutoAttack và chờ 0.3 giây để nhận diện ngũ hành boss.`);
+        return;
+      }
+      if (Date.now() < state.farmScanUntil) {
+        stopAutoAttackForScan();
+        setStatus(`Đang nhận diện hệ boss: ${Math.ceil((state.farmScanUntil - Date.now()) / 1000)}s`);
+        return;
+      }
+
+      const detectedBoss = currentBossElement();
+      if (!detectedBoss) {
+        setStatus('Chưa nhận diện được ngũ hành boss; tiếp tục dò');
+        return;
+      }
+      const expected = state.farmElements[stage - 1];
+      if (detectedBoss.toLowerCase() !== expected.toLowerCase()) {
+        setStatus(`Sai hệ: ${detectedBoss} ≠ ${expected}`);
+        // Không lặp click đầu hàng khi hộp xác nhận đã mở; chờ đúng hộp thoại rồi xác nhận.
+        const bodyText = getVisibleText().replace(norm(panel.innerText), '');
+        if (/xác nhận đầu hàng/.test(bodyText)) {
+          const confirm = findClickable(/^xác nhận$/i);
+          if (confirm) {
+            click(confirm, `Xác nhận đầu hàng ải ${stage} sai hệ`);
+            state.farmScanStage = 0;
+            state.retryAfter = Math.max(Date.now() + 1000, state.lastStartAt + 11001);
+            setStatus(`Đã đầu hàng ải ${stage}; chờ rồi bắt đầu dò lại ải này`);
+          }
+          return;
+        }
+        const abandon = findClickable(/đầu hàng/i);
+        if (abandon) {
+          click(abandon, `Đầu hàng ngay ải ${stage} (${detectedBoss}, cần ${expected})`);
+          await sleep(250);
+          const afterText = getVisibleText().replace(norm(panel.innerText), '');
+          if (/xác nhận đầu hàng/.test(afterText)) {
+            const confirm = findClickable(/^xác nhận$/i);
+            if (confirm) {
+              click(confirm, `Xác nhận đầu hàng ải ${stage} sai hệ`);
+              state.farmScanStage = 0;
+              state.retryAfter = Math.max(Date.now() + 1000, state.lastStartAt + 11001);
+              setStatus(`Đã đầu hàng ải ${stage}; chờ rồi bắt đầu dò lại ải này`);
+            }
+          } else {
+            state.retryAfter = Date.now() + 800;
+            log('Đã yêu cầu đầu hàng; đang chờ giao diện xác nhận.', 'warn');
+          }
+        } else {
+          setStatus('Sai hệ nhưng chưa thấy nút đầu hàng');
+        }
+        return;
+      }
+
+      setStatus(`Đúng hệ ${detectedBoss}; bật AutoAttack`);
+      const auto = autoAttackControl() || findClickable(/tự động/i);
+      if (auto && !autoAttackIsOn(auto)) click(auto, 'Bật AutoAttack sau khi xác nhận đúng hệ');
+      return;
+    }
+    setStatus(`Đang chiến đấu${stage ? ` — ải ${stage}` : ''}`);
+    const auto = findClickable(/tự động/i);
+    if (auto && !/đang tự động|tắt tự động/.test(textOf(auto))) click(auto, 'Bật tự động chiến đấu');
+  }
+
+  async function handleReward() {
+    setStatus('Phát hiện màn thưởng');
+    const t = getVisibleText().replace(norm(panel.innerText), '');
+
+    // FULL: chỉ chuyển bước khi game xác nhận "Thưởng vật phẩm hôm nay đã nhận".
+    // Không bấm rương đang đếm ngược hoặc nút thưởng/tiếp tục chung chung.
+    if (state.mode === 'full') {
+      if (state.perfectRewardHandled) {
+        setStatus('Đã xử lý rương của giai đoạn này; chờ về sảnh');
+        return;
+      }
+      const received = /thưởng vật phẩm hôm nay đã nhận/.test(t);
+      const completed = /đội hình đã vượt qua 5 ải|chinh phục mê cung/.test(t);
+      const returnButton = findClickable(/quay về sảnh/i);
+      if (!received || !completed) {
+        setStatus('Perfect: chờ game xác nhận đã nhận rương chinh phục');
+        state.retryAfter = Date.now() + 1000;
+        return;
+      }
+      if (!returnButton) {
+        setStatus('Perfect: đã nhận rương, đang chờ nút Quay về sảnh');
+        state.retryAfter = Date.now() + 700;
+        return;
+      }
+      // Chỉ tăng giai đoạn một lần, sau khi game xác nhận đã nhận thưởng.
+      if (!state.perfectRewardHandled) {
+        state.perfectRewardHandled = true;
+        if (state.perfectStage === 1) state.perfectStage = 2;
+        else if (state.perfectStage === 2) state.perfectStage = 3;
+        else state.perfectStage = 3; // Giai đoạn 3 lặp vô hạn.
+        state.difficulty = state.perfectStage === 2 ? 'Khó' : 'Thường';
+        log(`Đã nhận rương; quay về phòng và chuyển ngay sang Perfect giai đoạn ${state.perfectStage} (${state.difficulty}).`, 'good');
+      }
+      click(returnButton, 'Perfect: quay về sảnh sau khi nhận rương');
+      setStatus(`Perfect: quay về sảnh để chuyển sang giai đoạn ${state.perfectStage}`);
+      await sleep(500);
+      return;
+    }
+
+    if (state.mode === 'farm') {
+      const received = /thưởng vật phẩm hôm nay đã nhận/.test(t);
+      const completed = /đội hình đã vượt qua 5 ải|chinh phục mê cung/.test(t);
+      const returnButton = findClickable(/quay về sảnh|về sảnh|trở về sảnh/i);
+      const chest = findClickable(/bấm vào rương để nhận thưởng|bấm để mở rương|mở rương|nhận thưởng/i);
+      if (received && returnButton) {
+        click(returnButton, 'Farm: xác nhận đã nhận rương và quay về sảnh');
+        setStatus('Farm: đã nhận rương, quay về sảnh để lặp vòng mới');
+        await sleep(900); return;
+      }
+      if (completed && chest) {
+        click(chest, 'Farm: mở/nhận rương chinh phục');
+        await sleep(700); return;
+      }
+      if (returnButton && /rương|thưởng|hoàn thành|chinh phục/.test(t)) {
+        click(returnButton, 'Farm: xác nhận và quay về sảnh');
+        await sleep(900); return;
+      }
+      setStatus('Farm: chờ xác nhận rương chinh phục');
+      state.retryAfter = Date.now() + 1000; return;
+    }
+
+    if (state.mode === 'grass') {
+      const received = /thưởng vật phẩm hôm nay đã nhận/.test(t);
+      const completed = /đội hình đã vượt qua 5 ải|chinh phục mê cung/.test(t);
+      const returnButton = findClickable(/^quay về sảnh$/i);
+
+      // Chỉ kết thúc chu trình khi game xác nhận rương đã nhận; không xóa tiến trình ở màn rương đang chờ mở.
+      if (received && completed && returnButton) {
+        click(returnButton, 'Xác nhận đã nhận rương chinh phục · Quay về sảnh');
+        log('Đã nhận rương chinh phục. Kết thúc chu trình Farm cỏ và xóa danh sách ải đã hoàn thành.', 'good');
+        state.stageDone.clear();
+        state.lastCombatStage = 0;
+        state.farmScanStage = 0;
+        stop('Farm cỏ hoàn thành và đã nhận rương chinh phục');
+        return;
+      }
+
+      // Màn rương cuối: chỉ bấm đúng rương, không bấm các nút tiếp tục chung.
+      const chest = findClickable(/bấm để mở rương|mở rương|bấm vào rương để nhận thưởng/i);
+      if (completed && chest) {
+        click(chest, 'Mở rương chinh phục cuối chu trình Farm cỏ');
+        setStatus('Đã mở rương; chờ game xác nhận nhận thưởng');
+        await sleep(800);
+        return;
+      }
+      setStatus('Chờ xác nhận đã nhận rương chinh phục');
+      state.retryAfter = Date.now() + 1000;
+      return;
+    }
+
+    const chest = findClickable(/mở rương|nhận thưởng|nhận rương|tiếp tục|về sảnh|hoàn thành/i);
+    if (chest) {
+      click(chest, 'Mở/nhận thưởng hoặc tiếp tục');
+      await sleep(800);
+    } else {
+      log('Đã thấy dấu hiệu phần thưởng nhưng chưa xác định nút nhận; không tự bấm.', 'warn');
+      state.retryAfter = Date.now() + 2000;
+      return;
+    }
+  }
+
+
+  function countDeadPlayers() {
+    const deadRe = /(?:đã chết|đang chết|tử vong|đã tử vong|bị hạ gục|đã bị hạ|dead|defeated)/i;
+    const selectors = [
+      '.room-member','.member-item','.player-item','.room-user','.user-item',
+      '.lobby-player','.player-card','.char-card','.member','.players .item',
+      '.player-list .item','.member-list .member','.user-list .user',
+      '[class*="player"]','[class*="member"]'
+    ];
+    const containers = [...new Set(selectors.flatMap(sel => $$(sel)))].filter(el =>
+      el !== panel && !panel.contains(el) && visible(el) && el.children.length < 12
+    );
+    const marked = new Set();
+    for (const el of containers) {
+      const t = norm([el.innerText, el.getAttribute('aria-label'), el.getAttribute('title'), el.className].join(' '));
+      if (deadRe.test(t)) {
+        // Avoid counting a nested status and its enclosing player card twice.
+        const hasDeadAncestor = [...marked].some(parent => parent.contains(el));
+        if (!hasDeadAncestor) {
+          for (const child of [...marked]) if (el.contains(child)) marked.delete(child);
+          marked.add(el);
+        }
+      }
+    }
+    if (marked.size) return marked.size;
+    // Fallback for interfaces that render each death as a standalone status label.
+    const body = getVisibleText().replace(norm(panel.innerText), '');
+    const matches = body.match(/(?:đã chết|đang chết|tử vong|đã tử vong|bị hạ gục|đã bị hạ|dead|defeated)/gi);
+    return matches ? matches.length : 0;
+  }
+
+  async function handleDeadPlayerRetreat() {
+    const t = getVisibleText().replace(norm(panel.innerText), '');
+    const deadCount = countDeadPlayers();
+    if (!state.deadRetreatPending && deadCount > 2 && isCombat()) {
+      state.deadRetreatPending = true;
+      setStatus(`Có ${deadCount} người đã chết (>2) · tự đầu hàng để thử lại`);
+      log(`Phát hiện ${deadCount} người đã chết; đầu hàng và quay về phòng để thử lại.`, 'warn');
+    }
+    if (!state.deadRetreatPending) return false;
+
+    const confirm = findClickable(/^xác nhận$/i);
+    if (/xác nhận đầu hàng|xác nhận hành động/.test(t) && confirm) {
+      click(confirm, 'Xác nhận đầu hàng khi có hơn 2 người chết');
+      await sleep(400);
+      return true;
+    }
+    if (/thất bại|đầu hàng thành công|đã đầu hàng|kết thúc lượt/.test(t)) {
+      const back = findClickable(/quay về phòng|về phòng|quay về sảnh|về sảnh|trở về phòng|trở về sảnh|xác nhận|đồng ý/i);
+      if (back) {
+        click(back, 'Quay về phòng sau khi đầu hàng do hơn 2 người chết');
+        state.deadRetreatPending = false;
+        state.retryAfter = Date.now() + 1000;
+        await sleep(700);
+        return true;
+      }
+    }
+    if (isCombat()) {
+      const abandon = findClickable(/đầu hàng/i);
+      if (abandon && !/xác nhận đầu hàng/.test(t)) {
+        click(abandon, 'Đầu hàng khi có hơn 2 người chết');
+        await sleep(350);
+        const after = getVisibleText().replace(norm(panel.innerText), '');
+        if (/xác nhận đầu hàng|xác nhận hành động/.test(after)) {
+          const yes = findClickable(/^xác nhận$/i);
+          if (yes) click(yes, 'Xác nhận đầu hàng khi có hơn 2 người chết');
+        }
+        return true;
+      }
+    }
+    state.retryAfter = Date.now() + 800;
+    return true;
+  }
+
+  async function handleFarmEndState() {
+    if (state.mode !== 'farm') return false;
+    const t = getVisibleText().replace(norm(panel.innerText), '');
+    if (!/(thất bại|that bai|chinh phục thất bại|khiêu chiến thất bại|đã thất bại|bạn đã thua|đầu hàng thành công|đã đầu hàng)/i.test(t)) return false;
+    const confirm = findClickable(/^xác nhận$/i);
+    if (/xác nhận đầu hàng|xác nhận hành động/.test(t) && confirm) {
+      click(confirm, 'Farm: xác nhận kết quả/đầu hàng'); await sleep(500); return true;
+    }
+    const back = findClickable(/^(quay về phòng|về phòng|quay về sảnh|về sảnh|trở về phòng|trở về sảnh|xác nhận|đồng ý)$/i);
+    if (back) {
+      click(back, 'Farm: xác nhận kết thúc lượt và quay về sảnh');
+      setStatus('Farm: kết thúc lượt, quay về sảnh để tự chạy lại');
+      await sleep(700); return true;
+    }
+    setStatus('Farm: chờ nút xác nhận/quay về sảnh sau khi kết thúc lượt');
+    state.retryAfter = Date.now() + 1000; return true;
+  }
+
+  async function handlePerfectFailure() {
+    if (state.mode !== 'full') return false;
+    const t = getVisibleText().replace(norm(panel.innerText), '');
+    // Chỉ xử lý màn thất bại rõ ràng; không coi màn chiến đấu hoặc màn rương là thất bại.
+    if (!/(thất bại|that bai|chinh phục thất bại|khiêu chiến thất bại|đã thất bại|bạn đã thua)/i.test(t)) return false;
+    if (/thưởng vật phẩm hôm nay đã nhận/.test(t)) return false;
+    const back = findClickable(/^(quay về phòng|về phòng|quay về sảnh|về sảnh|trở về phòng|trở về sảnh|xác nhận)$/i);
+    if (back) {
+      click(back, `Perfect giai đoạn ${state.perfectStage}: thất bại trước khi nhận rương, quay về phòng để thử lại`);
+      setStatus(`Perfect · Thất bại, quay lại giai đoạn ${state.perfectStage}`);
+      await sleep(700);
+      return true;
+    }
+    setStatus(`Perfect · Phát hiện thất bại ở giai đoạn ${state.perfectStage}, chờ nút quay về phòng`);
+    state.retryAfter = Date.now() + 1200;
+    return true;
+  }
+
+  async function tick() {
+    if (!state.running || state.paused) return;
+    ui.diff.textContent = currentDifficulty() || state.difficulty || 'Chưa xác định';
+    if (await handleDeadPlayerRetreat()) return;
+    if (hasConfirmation()) {
+      confirmIfNeeded();
+      return;
+    }
+    if (isRewardScreen()) { await handleReward(); return; }
+    if (await handleFarmEndState()) return;
+    if (await handlePerfectFailure()) return;
+    if (isCombat()) { await handleCombat(); return; }
+    await handleLobby();
+  }
+
+  function start() {
+    state.mode = ui.mode.value;
+    state.farmElements = $$('[data-stage]', panel).map(el => el.value);
+    state.running = true; state.paused = false; state.busy = false;
+    state.perfectStage = 1;
+    state.perfectRewardHandled = false; state.deadRetreatPending = false; state.deadRetreatPending = false;
+    state.difficulty = state.mode === 'full' ? 'Ác Mộng' : state.mode === 'grass' ? 'Khó' : (currentDifficulty() || '');
+    state.startedAt = Date.now(); state.stageDone.clear(); state.lastStartAt = 0; state.lastCombatStage = 0; state.farmScanUntil = 0; state.farmScanStage = 0; state.retryAfter = 0; state.stoppedReason = '';
+    ui.elements.style.display = state.mode === 'grass' ? 'block' : 'none';
+    setStatus('Đang chạy'); log(state.mode === 'farm' ? 'Bắt đầu chế độ Farm: giữ nguyên độ khó, tự bắt đầu và lặp sau mỗi lượt.' : `Bắt đầu chế độ ${state.mode}. Perfect khởi tạo tại giai đoạn 1 — Ác Mộng.`);
+    tick();
+  }
+  function clearRunProgress() {
+    // Tiến trình chỉ thuộc một lần bấm Bắt đầu; Dừng sẽ xóa sạch để lần sau chạy mới.
+    state.stageDone.clear();
+    state.lastCombatStage = 0;
+    state.farmScanUntil = 0;
+    state.farmScanStage = 0;
+    state.lastStartAt = 0;
+    state.perfectStage = 1;
+    state.perfectRewardHandled = false; state.deadRetreatPending = false;
+    state.retryAfter = 0;
+    state.seenStage = '';
+    state.lastAction = '';
+    state.lastActionAt = 0;
+  }
+
+  function stop(reason = 'Đã dừng theo yêu cầu') {
+    state.running = false; state.paused = false; state.busy = false;
+    clearRunProgress();
+    state.stoppedReason = reason;
+    setStatus('Đã dừng');
+    if (ui.stage) ui.stage.textContent = '—';
+    log(`${reason} · Đã xóa toàn bộ tiến trình; lần Bắt đầu sau sẽ ghi nhớ mới.`, 'warn');
+  }
+
+  $('#mc-start', panel).addEventListener('click', start);
+  $('#mc-pause', panel).addEventListener('click', () => {
+    if (!state.running) { log('Chưa bắt đầu chạy.', 'warn'); return; }
+    state.paused = !state.paused;
+    setStatus(state.paused ? 'Đã tạm dừng' : 'Đang chạy');
+    $('#mc-pause', panel).textContent = state.paused ? '▶ Tiếp tục' : '⏸ Tạm dừng';
+    log(state.paused ? 'Tạm dừng thao tác tự động bắt đầu; giữ nguyên giai đoạn Perfect và tiến trình.' : 'Tiếp tục từ tiến trình đã giữ.');
+  });
+  $('#mc-stop', panel).addEventListener('click', () => stop());
+  $('#mc-mode', panel).addEventListener('change', () => {
+    ui.elements.style.display = ui.mode.value === 'grass' ? 'block' : 'none';
+  });
+  $('#mc-min', panel).addEventListener('click', () => {
+    panel.classList.toggle('mc-collapsed');
+    $('#mc-min', panel).textContent = panel.classList.contains('mc-collapsed') ? '+' : '−';
+  });
+
+  ui.elements.style.display = 'none';
+  log('Panel đã sẵn sàng. Hãy chọn chế độ và bấm Bắt đầu.');
+  // Vòng lặp tự động chạy độc lập với trạng thái thu gọn/mở rộng của panel.
+  setInterval(() => {
+    if (state.running && !state.paused) tick();
+    if (state.startedAt && state.running) {
+      const sec = Math.floor((Date.now() - state.startedAt) / 1000);
+      ui.time.textContent = `${String(Math.floor(sec/60)).padStart(2,'0')}:${String(sec%60).padStart(2,'0')}`;
+    }
+  }, 1200);
+})();
