@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name         Perfect Sakute
+// @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      2.9.0
+// @version      3.1.0
 // @description  Perfect, Farm cỏ và Farm; auto tiếp tục chạy khi thu gọn panel
-// @include        https://hoathinh3d.*/me-cung*
+// @include       https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
@@ -56,7 +56,7 @@
     running: false, paused: false, busy: false, mode: 'full',
     difficulty: '', stage: 0, lastAction: '', lastActionAt: 0,
     seenStage: '', startedAt: 0, log: [], stoppedReason: '',
-    farmElements: ['Kim', 'Mộc', 'Thủy', 'Hỏa', 'Thổ'],
+    farmElements: [['Kim'], ['Mộc'], ['Thủy'], ['Hỏa'], ['Thổ']],
     stageDone: new Set(), retryAfter: 0, lastStartAt: 0, lastCombatStage: 0, farmScanUntil: 0, farmScanStage: 0, perfectStage: 1, perfectRewardHandled: false, deadRetreatPending: false
   };
 
@@ -73,11 +73,11 @@
         </select>
       </label>
       <div id="mc-elements">
-        <div class="mc-subtitle">Hệ boss cần đánh theo từng ải</div>
+        <div class="mc-subtitle">Hệ boss cần đánh theo từng ải (chọn Bỏ để không dò)</div>
         <div class="mc-element-grid">
-          ${[1,2,3,4,5].map((n) => `<label>Ải ${n}<select data-stage="${n}">${words.elements.map(e=>`<option>${e[0].toUpperCase()+e.slice(1)}</option>`).join('')}</select></label>`).join('')}
+          ${[1,2,3,4,5].map((n) => `<fieldset class="mc-stage-elements" data-stage="${n}"><legend>Ải ${n}</legend>${['Bỏ', ...words.elements.map(e=>e[0].toUpperCase()+e.slice(1))].map((e,i)=>`<label><input type="checkbox" data-element="${e}" ${n===1&&e==='Kim'?'checked':''}>${e}</label>`).join('')}</fieldset>`).join('')}
         </div>
-        <p class="mc-note">Đúng hệ: đánh. Khác hệ: đầu hàng (cần xác nhận). Ải hoàn thành sẽ được bỏ qua.</p>
+        <p class="mc-note">Mỗi ải chọn 1 hoặc 2 ngũ hành. Chọn Bỏ thì không thể chọn hệ khác ở ải đó. Khi dò, chỉ cần boss khớp ít nhất 1 hệ đã chọn là tiếp tục đánh; sai cả hai hệ thì đầu hàng. Tiến trình các ải còn lại được ghi nhớ.</p>
       </div>
       <div class="mc-room-settings">
         <label>Người tối thiểu để bắt đầu
@@ -112,7 +112,9 @@
     #hh3d-mc-auto-panel button{cursor:pointer} #hh3d-mc-auto-panel button:hover{filter:brightness(1.2)}
     #hh3d-mc-auto-panel #mc-body{padding:12px;display:grid;gap:10px} #hh3d-mc-auto-panel #mc-body>label{display:grid;gap:5px}
     #hh3d-mc-auto-panel select{width:100%;min-width:0} #hh3d-mc-auto-panel .mc-element-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}
-    #hh3d-mc-auto-panel .mc-element-grid label{font-size:11px;display:grid;gap:4px} #hh3d-mc-auto-panel .mc-element-grid select{padding:5px 2px}
+    #hh3d-mc-auto-panel .mc-stage-elements{min-width:0;margin:0;padding:5px;border:1px solid #49306d;border-radius:7px}
+    #hh3d-mc-auto-panel .mc-stage-elements legend{font-size:11px;padding:0 3px} #hh3d-mc-auto-panel .mc-stage-elements label{font-size:10px;display:flex;align-items:center;gap:3px;margin:3px 0}
+    #hh3d-mc-auto-panel .mc-stage-elements input{width:auto;margin:0}
     #hh3d-mc-auto-panel .mc-room-settings{display:grid;gap:8px;padding:9px;background:#1b142b;border-radius:8px}
     #hh3d-mc-auto-panel .mc-room-settings label{display:flex;align-items:center;justify-content:space-between;gap:8px}
     #hh3d-mc-auto-panel .mc-room-settings select,#hh3d-mc-auto-panel .mc-room-settings input{width:76px}
@@ -428,9 +430,9 @@
       // Chỉ xác nhận đầu hàng nếu chế độ Farm cỏ và boss sai hệ.
       if (state.mode === 'grass' && isCombat()) {
         const stage = currentStage();
-        const expected = state.farmElements[stage - 1];
+        const expected = state.farmElements[stage - 1] || [];
         const boss = currentBossElement();
-        if (stage >= 1 && stage <= 5 && boss && expected && boss.toLowerCase() !== expected.toLowerCase()) {
+        if (stage >= 1 && stage <= 5 && boss && expected.length && !expected.includes('Bỏ') && !expected.some(e => e.toLowerCase() === boss.toLowerCase())) {
           return click(findClickable(/^xác nhận$/i), 'Xác nhận đầu hàng (khác hệ)');
         }
       }
@@ -583,11 +585,21 @@
       // Khi thấy số ải tăng, ải trước đã được vượt qua. Ghi nhớ qua các lần đầu hàng
       // và bắt đầu lại; chỉ xóa danh sách này khi nhận rương chinh phục cuối chu trình.
       const previousStage = state.lastCombatStage;
-      if (previousStage >= 1 && previousStage < stage && !state.stageDone.has(previousStage)) {
+      if (previousStage >= 1 && previousStage < stage && !(state.farmElements[previousStage - 1] || []).includes('Bỏ') && !state.stageDone.has(previousStage)) {
         state.stageDone.add(previousStage);
         log(`Ghi nhớ ải ${previousStage} đã vượt qua; sẽ bỏ qua dò hệ ở lần bắt đầu lại.`, 'good');
       }
       state.lastCombatStage = stage;
+
+      // Ải được chọn 'Bỏ': không dò ngũ hành, không đầu hàng theo hệ; cứ bật AutoAttack.
+      // Không đưa ải này vào danh sách stageDone vì đây là lựa chọn bỏ dò, không phải xác nhận hoàn thành.
+      if ((state.farmElements[stage - 1] || []).includes('Bỏ')) {
+        state.farmScanStage = 0;
+        setStatus(`Ải ${stage}: đã chọn Bỏ — bỏ qua dò ngũ hành`);
+        const auto = autoAttackControl() || findClickable(/tự động/i);
+        if (auto && !autoAttackIsOn(auto)) click(auto, `Farm cỏ: bỏ dò ngũ hành ải ${stage}, bật AutoAttack`);
+        return;
+      }
 
       // Ải đã vượt qua: không dò hệ và không đầu hàng, bật AutoAttack để đi tiếp.
       if (state.stageDone.has(stage)) {
@@ -598,7 +610,7 @@
         return;
       }
 
-      // Mỗi lần gặp ải chưa hoàn thành: tắt AutoAttack và chờ đủ 0.5 giây để đọc nhãn boss.
+      // Mỗi lần gặp ải chưa hoàn thành: tắt AutoAttack và chờ đủ 0.3 giây để đọc nhãn boss.
       if (state.farmScanStage !== stage) {
         state.farmScanStage = stage;
         state.farmScanUntil = Date.now() + 300;
@@ -618,9 +630,9 @@
         setStatus('Chưa nhận diện được ngũ hành boss; tiếp tục dò');
         return;
       }
-      const expected = state.farmElements[stage - 1];
-      if (detectedBoss.toLowerCase() !== expected.toLowerCase()) {
-        setStatus(`Sai hệ: ${detectedBoss} ≠ ${expected}`);
+      const expected = state.farmElements[stage - 1] || [];
+      if (!expected.some(e => e.toLowerCase() === detectedBoss.toLowerCase())) {
+        setStatus(`Sai hệ: ${detectedBoss} không thuộc ${expected.join(' / ')}`);
         // Không lặp click đầu hàng khi hộp xác nhận đã mở; chờ đúng hộp thoại rồi xác nhận.
         const bodyText = getVisibleText().replace(norm(panel.innerText), '');
         if (/xác nhận đầu hàng/.test(bodyText)) {
@@ -635,7 +647,7 @@
         }
         const abandon = findClickable(/đầu hàng/i);
         if (abandon) {
-          click(abandon, `Đầu hàng ngay ải ${stage} (${detectedBoss}, cần ${expected})`);
+          click(abandon, `Đầu hàng ngay ải ${stage} (${detectedBoss}, cần ${expected.join(' / ')})`);
           await sleep(250);
           const afterText = getVisibleText().replace(norm(panel.innerText), '');
           if (/xác nhận đầu hàng/.test(afterText)) {
@@ -894,7 +906,7 @@
 
   function start() {
     state.mode = ui.mode.value;
-    state.farmElements = $$('[data-stage]', panel).map(el => el.value);
+    state.farmElements = $$('.mc-stage-elements[data-stage]', panel).map(box => { const chosen = $$('input[data-element]:checked', box).map(el => el.dataset.element); return chosen.length ? chosen : ['Kim']; });
     state.running = true; state.paused = false; state.busy = false;
     state.perfectStage = 1;
     state.perfectRewardHandled = false; state.deadRetreatPending = false; state.deadRetreatPending = false;
@@ -937,6 +949,28 @@
     log(state.paused ? 'Tạm dừng thao tác tự động bắt đầu; giữ nguyên giai đoạn Perfect và tiến trình.' : 'Tiếp tục từ tiến trình đã giữ.');
   });
   $('#mc-stop', panel).addEventListener('click', () => stop());
+  // Mỗi ải chọn tối đa hai hệ; Bỏ là lựa chọn độc quyền.
+  $$('.mc-stage-elements', panel).forEach(box => {
+    box.addEventListener('change', ev => {
+      const input = ev.target;
+      if (!input.matches('input[data-element]')) return;
+      const checks = $$('input[data-element]', box);
+      const skip = checks.find(el => el.dataset.element === 'Bỏ');
+      const chosen = checks.filter(el => el.checked && el !== skip);
+      if (input === skip && skip.checked) {
+        checks.forEach(el => { if (el !== skip) el.checked = false; });
+      } else if (input !== skip && input.checked) {
+        if (skip) skip.checked = false;
+        const others = checks.filter(el => el.checked && el !== skip);
+        if (others.length > 2) input.checked = false;
+      }
+      if (!checks.some(el => el.checked)) {
+        const first = checks.find(el => el.dataset.element !== 'Bỏ');
+        if (first) first.checked = true;
+      }
+    });
+  });
+
   $('#mc-mode', panel).addEventListener('change', () => {
     ui.elements.style.display = ui.mode.value === 'grass' ? 'block' : 'none';
   });
