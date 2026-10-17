@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.1.0
-// @description  Perfect, Farm cỏ và Farm; auto tiếp tục chạy khi thu gọn panel
-// @include       https://hoathinh3d.*/me-cung*
+// @version      3.3.1
+// @description  Perfect game 
+// @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
@@ -25,6 +25,7 @@
   };
 
   const ROOM_SETTINGS_KEY = 'hh3d_maze_config_v2';
+  const RUN_PROGRESS_KEY = 'hh3d_maze_run_progress_v1';
   const ROOM_DEFAULTS = { requiredPlayers: 5, autoKickIdle: true, idleKickSeconds: 5 };
   let roomSettings = { ...ROOM_DEFAULTS };
   try {
@@ -57,8 +58,69 @@
     difficulty: '', stage: 0, lastAction: '', lastActionAt: 0,
     seenStage: '', startedAt: 0, log: [], stoppedReason: '',
     farmElements: [['Kim'], ['Mộc'], ['Thủy'], ['Hỏa'], ['Thổ']],
-    stageDone: new Set(), retryAfter: 0, lastStartAt: 0, lastCombatStage: 0, farmScanUntil: 0, farmScanStage: 0, perfectStage: 1, perfectRewardHandled: false, deadRetreatPending: false
+    stageDone: new Set(), retryAfter: 0, lastStartAt: 0, lastCombatStage: 0, farmScanUntil: 0, farmScanStage: 0, perfectStage: 1, perfectRewardHandled: false, perfectAdvancePending: false, deadRetreatPending: false, lobbyWaitUntil: 0
   };
+
+  function saveRunProgress() {
+    try {
+      if (!state.running) return;
+      localStorage.setItem(RUN_PROGRESS_KEY, JSON.stringify({
+        running: true, paused: !!state.paused, mode: state.mode,
+        difficulty: state.difficulty, stage: state.stage,
+        startedAt: state.startedAt, log: state.log.slice(0, 30),
+        farmElements: state.farmElements, stageDone: [...state.stageDone],
+        retryAfter: state.retryAfter, lastStartAt: state.lastStartAt,
+        lastCombatStage: state.lastCombatStage, farmScanUntil: state.farmScanUntil,
+        farmScanStage: state.farmScanStage, perfectStage: state.perfectStage,
+        perfectRewardHandled: state.perfectRewardHandled,
+        perfectAdvancePending: state.perfectAdvancePending,
+        deadRetreatPending: state.deadRetreatPending, lobbyWaitUntil: state.lobbyWaitUntil,
+        seenStage: state.seenStage, lastAction: state.lastAction,
+        lastActionAt: state.lastActionAt
+      }));
+    } catch (_) {}
+  }
+  function clearSavedRunProgress() {
+    try { localStorage.removeItem(RUN_PROGRESS_KEY); } catch (_) {}
+  }
+  function restoreRunProgress() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(RUN_PROGRESS_KEY) || 'null');
+      if (!saved || saved.running !== true) return false;
+      state.mode = ['full', 'grass', 'farm'].includes(saved.mode) ? saved.mode : 'full';
+      state.paused = false; // yêu cầu: tự chạy tiếp sau khi trang tải lại
+      state.running = true; state.busy = false;
+      state.difficulty = saved.difficulty || '';
+      state.stage = Number(saved.stage) || 0;
+      state.startedAt = Number(saved.startedAt) || Date.now();
+      state.log = Array.isArray(saved.log) ? saved.log.slice(0, 30) : [];
+      state.farmElements = Array.isArray(saved.farmElements) ? saved.farmElements : state.farmElements;
+      state.stageDone = new Set(Array.isArray(saved.stageDone) ? saved.stageDone : []);
+      state.retryAfter = Number(saved.retryAfter) || 0;
+      state.lastStartAt = Number(saved.lastStartAt) || 0;
+      state.lastCombatStage = Number(saved.lastCombatStage) || 0;
+      state.farmScanUntil = Number(saved.farmScanUntil) || 0;
+      state.farmScanStage = Number(saved.farmScanStage) || 0;
+      state.perfectStage = [1,2,3].includes(Number(saved.perfectStage)) ? Number(saved.perfectStage) : 1;
+      state.perfectRewardHandled = !!saved.perfectRewardHandled;
+      state.perfectAdvancePending = !!saved.perfectAdvancePending;
+      state.deadRetreatPending = !!saved.deadRetreatPending;
+      state.lobbyWaitUntil = Number(saved.lobbyWaitUntil) || 0;
+      state.seenStage = saved.seenStage || '';
+      state.lastAction = saved.lastAction || '';
+      state.lastActionAt = Number(saved.lastActionAt) || 0;
+      ui.mode.value = state.mode;
+      $$('.mc-stage-elements[data-stage]', panel).forEach((box, i) => {
+        const chosen = state.farmElements[i] || ['Kim'];
+        $$('input[data-element]', box).forEach(el => { el.checked = chosen.includes(el.dataset.element); });
+      });
+      ui.elements.style.display = state.mode === 'grass' ? 'block' : 'none';
+      setStatus('Đã khôi phục · tự chạy tiếp');
+      log('Đã khôi phục tiến trình sau khi tải lại trang; tự động tiếp tục.');
+      saveRunProgress();
+      return true;
+    } catch (_) { return false; }
+  }
 
   const panel = document.createElement('section');
   panel.id = 'hh3d-mc-auto-panel';
@@ -103,6 +165,8 @@
       <div class="mc-note">Farm cỏ: đầu hàng ngay khi sai hệ; khoảng cách bắt đầu tối thiểu 11 giây. Ải đã hoàn thành trong lượt này không đầu hàng.</div>
     </div>`;
   document.body.appendChild(panel);
+  // Chỉ hiển thị panel khi tài khoản hiện tại là chủ phòng; kiểm tra lặp vì trạng thái phòng có thể thay đổi.
+  panel.style.display = 'none';
 
   const style = document.createElement('style');
   style.textContent = `
@@ -296,6 +360,119 @@
     const label = norm([textOf(el), el.getAttribute('aria-label') || '', el.getAttribute('title') || ''].join(' '));
     return /đang tự động|tắt tự động|auto\s*attack\s*on|autoattack\s*on|dừng tự động/.test(label);
   }
+
+  function settingToggleState(el) {
+    if (!el) return null;
+    const nodes = [el, ...$$('*', el)].slice(0, 80);
+    let sawState = false;
+    for (const node of nodes) {
+      const ariaChecked = node.getAttribute?.('aria-checked');
+      const ariaPressed = node.getAttribute?.('aria-pressed');
+      if (ariaChecked === 'true' || ariaPressed === 'true') return true;
+      if (ariaChecked === 'false' || ariaPressed === 'false') sawState = true;
+      if (node.matches?.('input[type="checkbox"],input[type="radio"]')) {
+        sawState = true;
+        if (node.checked) return true;
+      }
+      const cls = norm(typeof node.className === 'string' ? node.className : '');
+      if (/(^|\s)(active|enabled|on|checked|is-on|toggle-on)(\s|$)/.test(cls)) return true;
+      if (/(^|\s)(inactive|disabled|off|unchecked|is-off|toggle-off)(\s|$)/.test(cls)) sawState = true;
+      try {
+        const bg = getComputedStyle(node).backgroundColor;
+        const m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+        if (m) {
+          const r = +m[1], g = +m[2], b = +m[3];
+          if (g > 100 && g > r * 1.25 && g > b * 1.05) return true;
+          if (r > 100 && r > g * 1.25 && r > b * 1.05) sawState = true;
+        }
+      } catch (_) {}
+    }
+    const label = norm([textOf(el), el.getAttribute?.('aria-label') || '', el.getAttribute?.('title') || ''].join(' '));
+    if (/^(bật|đang bật|on|enabled)$/.test(label)) return true;
+    if (/^(tắt|đang tắt|off|disabled)$/.test(label)) return false;
+    return sawState ? false : null;
+  }
+
+  function findNamedSettingToggle(name) {
+    const outside = $$('body *').filter(el => el !== panel && !panel.contains(el) && visible(el));
+    const label = outside
+      .filter(el => norm(textOf(el)) === norm(name) && el.children.length <= 3)
+      .sort((a, b) => (a.innerText || a.textContent || '').length - (b.innerText || b.textContent || '').length)[0];
+    if (!label) return null;
+    for (let parent = label, depth = 0; depth < 4 && parent && parent !== document.body; depth++, parent = parent.parentElement) {
+      const toggles = $$('button,[role="switch"],[role="checkbox"],input[type="checkbox"],label,[tabindex],[class*="switch"],[class*="toggle"]', parent)
+        .filter(el => el !== label && visible(el) && el !== panel && !panel.contains(el));
+      if (toggles.length) {
+        const lr = label.getBoundingClientRect();
+        const right = toggles.filter(el => el.getBoundingClientRect().left >= lr.left);
+        const pool = right.length ? right : toggles;
+        return pool.sort((a, b) => {
+          const ar = a.getBoundingClientRect(), br = b.getBoundingClientRect();
+          return (ar.width * ar.height) - (br.width * br.height);
+        })[0];
+      }
+      const clickable = label.closest('button,[role="button"],label,[tabindex]');
+      if (clickable && clickable !== panel && !panel.contains(clickable)) return clickable;
+    }
+    return null;
+  }
+
+  function keepGameSettingsEnabled() {
+    for (const name of ['Tự động chuyển ải', 'Tự động mở rương']) {
+      const toggle = findNamedSettingToggle(name);
+      if (!toggle) continue;
+      const state = settingToggleState(toggle);
+      // Chỉ bấm khi trạng thái tắt được nhận diện rõ ràng; không mạo hiểm đảo công tắc đang bật.
+      if (state === false) {
+        toggle.click();
+        log(`Tự bật lại cài đặt "${name}".`, 'good');
+      }
+    }
+  }
+
+  function isRoomHost() {
+    const candidates = $$('body *').filter(el =>
+      el !== panel && !panel.contains(el) && visible(el) &&
+      /^(chủ phòng|chủ phòng 👑|host|room host)$/.test(norm(textOf(el))) &&
+      el.children.length <= 3
+    );
+    return candidates.length > 0;
+  }
+
+
+  const EXPIRED_RELOAD_KEY = 'hh3d_maze_expired_reload_once_v1';
+
+  function checkExpiredSession() {
+    const bodyText = norm(document.body?.innerText || '');
+    const expired = /phiên đã hết hạn/.test(bodyText) &&
+                    /tải lại trang/.test(bodyText);
+
+    if (!expired) {
+      // Xóa khóa khi màn hết hạn đã biến mất, để lần hết hạn sau vẫn tự xử lý.
+      try { sessionStorage.removeItem(EXPIRED_RELOAD_KEY); } catch (_) {}
+      return false;
+    }
+
+    // Lưu tiến trình trước khi tải lại; restoreRunProgress() sẽ tự tiếp tục sau khi trang mở lại.
+    if (state.running) saveRunProgress();
+
+    try {
+      // Chống reload lặp vô hạn nếu máy chủ vẫn trả về màn "Phiên đã hết hạn".
+      if (sessionStorage.getItem(EXPIRED_RELOAD_KEY) === '1') return true;
+      sessionStorage.setItem(EXPIRED_RELOAD_KEY, '1');
+    } catch (_) {}
+
+    setStatus('Phiên hết hạn — đang tải lại và khôi phục tiến trình…');
+    window.setTimeout(() => {
+      try { window.location.reload(); } catch (_) {}
+    }, 900);
+    return true;
+  }
+
+  function updatePanelVisibility() {
+    panel.style.display = isRoomHost() ? '' : 'none';
+  }
+
   function stopAutoAttackForScan() {
     const control = autoAttackControl();
     if (control && autoAttackIsOn(control)) {
@@ -492,10 +669,18 @@
   }
 
   async function handleLobby() {
+    // Giai đoạn Perfect đã được chốt ngay khi game xác nhận nhận rương; sảnh chỉ dùng để đổi độ khó/bắt đầu lượt kế.
+    state.perfectAdvancePending = false;
     // Đã rời màn rương; cho phép xử lý rương của chu trình kế tiếp.
     state.perfectRewardHandled = false;
     const mode = state.mode;
     const desired = mode === 'full' ? (state.perfectStage === 1 ? 'Ác Mộng' : state.perfectStage === 2 ? 'Khó' : 'Thường') : mode === 'grass' ? 'Khó' : '';
+    // Mỗi lần vừa về sảnh, chỉ đợi 3 giây rồi đổi độ khó/bắt đầu.
+    if (!state.lobbyWaitUntil) state.lobbyWaitUntil = Date.now() + 3000;
+    if (Date.now() < state.lobbyWaitUntil) {
+      setStatus(`Đang ở sảnh · chờ ${Math.ceil((state.lobbyWaitUntil - Date.now()) / 1000)}s trước khi tiếp tục`);
+      return;
+    }
     // Farm tuyệt đối không mở/chọn độ khó; chỉ tự bắt đầu ở độ khó hiện tại.
     const actual = currentDifficulty();
     ui.diff.textContent = actual || (mode === 'farm' ? 'Giữ độ khó hiện tại' : desired) || 'Chưa xác định';
@@ -531,6 +716,7 @@
         }
       }
       state.lastStartAt = Date.now();
+      state.lobbyWaitUntil = 0;
       click(start, `Bắt đầu Mê Cung · ${mode}`);
       // Modal xác nhận có thể xuất hiện trễ; dò lại vài lần thay vì chỉ kiểm tra một lần.
       for (let attempt = 0; attempt < 5; attempt++) {
@@ -685,35 +871,48 @@
     // FULL: chỉ chuyển bước khi game xác nhận "Thưởng vật phẩm hôm nay đã nhận".
     // Không bấm rương đang đếm ngược hoặc nút thưởng/tiếp tục chung chung.
     if (state.mode === 'full') {
+      const returnButton = findClickable(/quay về sảnh/i);
       if (state.perfectRewardHandled) {
-        setStatus('Đã xử lý rương của giai đoạn này; chờ về sảnh');
+        // Đã chốt giai đoạn rồi: chỉ tiếp tục thao tác quay về sảnh, tuyệt đối không tăng giai đoạn lần nữa.
+        if (returnButton && Date.now() - state.lastActionAt > 5000) {
+          click(returnButton, 'Perfect: tiếp tục quay về sảnh sau khi ghi nhận rương');
+        } else {
+          setStatus(`Perfect giai đoạn ${state.perfectStage}: đã ghi nhận rương, chờ về sảnh`);
+          state.retryAfter = Date.now() + 700;
+        }
         return;
       }
       const received = /thưởng vật phẩm hôm nay đã nhận/.test(t);
       const completed = /đội hình đã vượt qua 5 ải|chinh phục mê cung/.test(t);
-      const returnButton = findClickable(/quay về sảnh/i);
       if (!received || !completed) {
         setStatus('Perfect: chờ game xác nhận đã nhận rương chinh phục');
         state.retryAfter = Date.now() + 1000;
         return;
       }
-      if (!returnButton) {
-        setStatus('Perfect: đã nhận rương, đang chờ nút Quay về sảnh');
-        state.retryAfter = Date.now() + 700;
-        return;
-      }
-      // Chỉ tăng giai đoạn một lần, sau khi game xác nhận đã nhận thưởng.
+      // Chốt giai đoạn NGAY khi game xác nhận đã nhận rương, không phụ thuộc việc đã về sảnh hay chưa.
       if (!state.perfectRewardHandled) {
+        const completedStage = state.perfectStage;
         state.perfectRewardHandled = true;
         if (state.perfectStage === 1) state.perfectStage = 2;
         else if (state.perfectStage === 2) state.perfectStage = 3;
-        else state.perfectStage = 3; // Giai đoạn 3 lặp vô hạn.
-        state.difficulty = state.perfectStage === 2 ? 'Khó' : 'Thường';
-        log(`Đã nhận rương; quay về phòng và chuyển ngay sang Perfect giai đoạn ${state.perfectStage} (${state.difficulty}).`, 'good');
+        state.perfectAdvancePending = false;
+        state.difficulty = state.perfectStage === 2 ? 'Khó' : state.perfectStage === 3 ? 'Thường' : 'Ác Mộng';
+        log(
+          completedStage < 3
+            ? `Đã nhận rương Perfect giai đoạn ${completedStage}; chuyển ngay sang giai đoạn ${state.perfectStage} (${state.difficulty}).`
+            : `Đã nhận rương Perfect giai đoạn 3; hoàn tất chu trình Perfect.`,
+          'good'
+        );
+        saveRunProgress();
+      }
+      if (!returnButton) {
+        setStatus(`Perfect giai đoạn ${state.perfectStage}: đã ghi nhận rương, chờ nút Quay về sảnh`);
+        state.retryAfter = Date.now() + 700;
+        return;
       }
       click(returnButton, 'Perfect: quay về sảnh sau khi nhận rương');
-      setStatus(`Perfect: quay về sảnh để chuyển sang giai đoạn ${state.perfectStage}`);
-      await sleep(500);
+      setStatus(`Perfect: đã ghi nhận giai đoạn ${state.perfectStage}; quay về sảnh để tiếp tục`);
+      await sleep(300);
       return;
     }
 
@@ -813,7 +1012,10 @@
   async function handleDeadPlayerRetreat() {
     const t = getVisibleText().replace(norm(panel.innerText), '');
     const deadCount = countDeadPlayers();
-    if (!state.deadRetreatPending && deadCount > 2 && isCombat()) {
+    const activeDifficulty = currentDifficulty() || state.difficulty || '';
+    const isNightmare = /ác mộng/i.test(activeDifficulty) || (state.mode === 'full' && state.perfectStage === 1);
+    if (!isNightmare && !state.deadRetreatPending) return false;
+    if (!state.deadRetreatPending && isNightmare && deadCount > 2 && isCombat()) {
       state.deadRetreatPending = true;
       setStatus(`Có ${deadCount} người đã chết (>2) · tự đầu hàng để thử lại`);
       log(`Phát hiện ${deadCount} người đã chết; đầu hàng và quay về phòng để thử lại.`, 'warn');
@@ -909,9 +1111,10 @@
     state.farmElements = $$('.mc-stage-elements[data-stage]', panel).map(box => { const chosen = $$('input[data-element]:checked', box).map(el => el.dataset.element); return chosen.length ? chosen : ['Kim']; });
     state.running = true; state.paused = false; state.busy = false;
     state.perfectStage = 1;
-    state.perfectRewardHandled = false; state.deadRetreatPending = false; state.deadRetreatPending = false;
+    state.perfectRewardHandled = false; state.perfectAdvancePending = false; state.deadRetreatPending = false;
     state.difficulty = state.mode === 'full' ? 'Ác Mộng' : state.mode === 'grass' ? 'Khó' : (currentDifficulty() || '');
-    state.startedAt = Date.now(); state.stageDone.clear(); state.lastStartAt = 0; state.lastCombatStage = 0; state.farmScanUntil = 0; state.farmScanStage = 0; state.retryAfter = 0; state.stoppedReason = '';
+    state.startedAt = Date.now(); state.stageDone.clear(); state.lastStartAt = 0; state.lastCombatStage = 0; state.farmScanUntil = 0; state.farmScanStage = 0; state.retryAfter = 0; state.lobbyWaitUntil = 0; state.stoppedReason = '';
+    saveRunProgress();
     ui.elements.style.display = state.mode === 'grass' ? 'block' : 'none';
     setStatus('Đang chạy'); log(state.mode === 'farm' ? 'Bắt đầu chế độ Farm: giữ nguyên độ khó, tự bắt đầu và lặp sau mỗi lượt.' : `Bắt đầu chế độ ${state.mode}. Perfect khởi tạo tại giai đoạn 1 — Ác Mộng.`);
     tick();
@@ -924,8 +1127,9 @@
     state.farmScanStage = 0;
     state.lastStartAt = 0;
     state.perfectStage = 1;
-    state.perfectRewardHandled = false; state.deadRetreatPending = false;
+    state.perfectRewardHandled = false; state.perfectAdvancePending = false; state.deadRetreatPending = false;
     state.retryAfter = 0;
+    state.lobbyWaitUntil = 0;
     state.seenStage = '';
     state.lastAction = '';
     state.lastActionAt = 0;
@@ -934,6 +1138,7 @@
   function stop(reason = 'Đã dừng theo yêu cầu') {
     state.running = false; state.paused = false; state.busy = false;
     clearRunProgress();
+    clearSavedRunProgress();
     state.stoppedReason = reason;
     setStatus('Đã dừng');
     if (ui.stage) ui.stage.textContent = '—';
@@ -947,6 +1152,7 @@
     setStatus(state.paused ? 'Đã tạm dừng' : 'Đang chạy');
     $('#mc-pause', panel).textContent = state.paused ? '▶ Tiếp tục' : '⏸ Tạm dừng';
     log(state.paused ? 'Tạm dừng thao tác tự động bắt đầu; giữ nguyên giai đoạn Perfect và tiến trình.' : 'Tiếp tục từ tiến trình đã giữ.');
+    saveRunProgress();
   });
   $('#mc-stop', panel).addEventListener('click', () => stop());
   // Mỗi ải chọn tối đa hai hệ; Bỏ là lựa chọn độc quyền.
@@ -980,10 +1186,15 @@
   });
 
   ui.elements.style.display = 'none';
-  log('Panel đã sẵn sàng. Hãy chọn chế độ và bấm Bắt đầu.');
+  // Khôi phục phiên chạy được lưu trước khi trang reload.
+  const resumed = restoreRunProgress();
+  if (!resumed) log('Panel đã sẵn sàng. Hãy chọn chế độ và bấm Bắt đầu.');
   // Vòng lặp tự động chạy độc lập với trạng thái thu gọn/mở rộng của panel.
   setInterval(() => {
-    if (state.running && !state.paused) tick();
+    if (checkExpiredSession()) return;
+    updatePanelVisibility();
+    keepGameSettingsEnabled();
+    if (state.running && !state.paused) { tick(); saveRunProgress(); }
     if (state.startedAt && state.running) {
       const sec = Math.floor((Date.now() - state.startedAt) / 1000);
       ui.time.textContent = `${String(Math.floor(sec/60)).padStart(2,'0')}:${String(sec%60).padStart(2,'0')}`;
