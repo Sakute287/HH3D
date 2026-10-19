@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Sakute
+// @name         Sakute 3.5.0
 // @namespace    hh3d.me-cung.automation
-// @version      3.3.1
-// @description  Perfect game 
+// @version      3.5.0
+// @description  Nhận diện chủ phòng bằng huy hiệu vương miện trong trận; panel giữ trạng thái khi Auto chạy
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -26,6 +26,12 @@
 
   const ROOM_SETTINGS_KEY = 'hh3d_maze_config_v2';
   const RUN_PROGRESS_KEY = 'hh3d_maze_run_progress_v1';
+  const INVITE_SENT_KEY = 'hh3d_maze_invite_last_event_v1';
+  const INVITE_EVENT_COOLDOWN_MS = 8000;
+  const INVITE_REMINDER_INTERVAL_MS = 10 * 60 * 1000;
+  let lastInviteRosterFingerprint = '';
+  let inviteSendInFlight = false;
+  const CHAT_THREAD_ID = 22239;
   const ROOM_DEFAULTS = { requiredPlayers: 5, autoKickIdle: true, idleKickSeconds: 5 };
   let roomSettings = { ...ROOM_DEFAULTS };
   try {
@@ -58,8 +64,11 @@
     difficulty: '', stage: 0, lastAction: '', lastActionAt: 0,
     seenStage: '', startedAt: 0, log: [], stoppedReason: '',
     farmElements: [['Kim'], ['Mộc'], ['Thủy'], ['Hỏa'], ['Thổ']],
-    stageDone: new Set(), retryAfter: 0, lastStartAt: 0, lastCombatStage: 0, farmScanUntil: 0, farmScanStage: 0, perfectStage: 1, perfectRewardHandled: false, perfectAdvancePending: false, deadRetreatPending: false, lobbyWaitUntil: 0
+    stageDone: new Set(), retryAfter: 0, lastStartAt: 0, lastCombatStage: 0, farmScanUntil: 0, farmScanStage: 0, perfectStage: 1, perfectRewardHandled: false, perfectAdvancePending: false, deadRetreatPending: false, lobbyWaitUntil: 0,
+    perfectStage3ChestCount: 0, perfectStopAfterReturn: false, perfectKickIssued: false, perfectKickPending: false
   };
+  let lastRoomFingerprint = '';
+  let panelOpen = false;
 
   function saveRunProgress() {
     try {
@@ -76,17 +85,23 @@
         perfectAdvancePending: state.perfectAdvancePending,
         deadRetreatPending: state.deadRetreatPending, lobbyWaitUntil: state.lobbyWaitUntil,
         seenStage: state.seenStage, lastAction: state.lastAction,
-        lastActionAt: state.lastActionAt
+        lastActionAt: state.lastActionAt,
+        perfectStage3ChestCount: state.perfectStage3ChestCount, perfectStopAfterReturn: state.perfectStopAfterReturn,
+        perfectKickIssued: state.perfectKickIssued, perfectKickPending: state.perfectKickPending
       }));
     } catch (_) {}
   }
   function clearSavedRunProgress() {
     try { localStorage.removeItem(RUN_PROGRESS_KEY); } catch (_) {}
   }
+  const USER_STARTED_RUN_KEY = 'hh3d_maze_user_started_run_v1';
   function restoreRunProgress() {
     try {
+      // Không tự khởi chạy khi người dùng chỉ vừa mở panel/trang. Chỉ phục hồi sau reload
+      // nếu phiên tab này trước đó đã được người dùng bấm Auto.
+      if (sessionStorage.getItem(USER_STARTED_RUN_KEY) !== '1') return false;
       const saved = JSON.parse(localStorage.getItem(RUN_PROGRESS_KEY) || 'null');
-      if (!saved || saved.running !== true) return false;
+      if (!saved || saved.running !== true) { sessionStorage.removeItem(USER_STARTED_RUN_KEY); return false; }
       state.mode = ['full', 'grass', 'farm'].includes(saved.mode) ? saved.mode : 'full';
       state.paused = false; // yêu cầu: tự chạy tiếp sau khi trang tải lại
       state.running = true; state.busy = false;
@@ -109,6 +124,9 @@
       state.seenStage = saved.seenStage || '';
       state.lastAction = saved.lastAction || '';
       state.lastActionAt = Number(saved.lastActionAt) || 0;
+      state.perfectStage3ChestCount = clampInt(saved.perfectStage3ChestCount, 0, 5, 0);
+      state.perfectStopAfterReturn = !!saved.perfectStopAfterReturn;
+      state.perfectKickIssued = !!saved.perfectKickIssued; state.perfectKickPending = !!saved.perfectKickPending;
       ui.mode.value = state.mode;
       $$('.mc-stage-elements[data-stage]', panel).forEach((box, i) => {
         const chosen = state.farmElements[i] || ['Kim'];
@@ -165,7 +183,13 @@
       <div class="mc-note">Farm cỏ: đầu hàng ngay khi sai hệ; khoảng cách bắt đầu tối thiểu 11 giây. Ải đã hoàn thành trong lượt này không đầu hàng.</div>
     </div>`;
   document.body.appendChild(panel);
-  // Chỉ hiển thị panel khi tài khoản hiện tại là chủ phòng; kiểm tra lặp vì trạng thái phòng có thể thay đổi.
+  // Nút mở panel xuất hiện khi là chủ phòng; mở panel không tự khởi chạy tool.
+  const launcher = document.createElement('button');
+  launcher.id = 'hh3d-mc-auto-launcher';
+  launcher.type = 'button';
+  launcher.textContent = '▶ Mê Cung Auto';
+  launcher.style.cssText = 'position:fixed;right:16px;top:90px;z-index:2147483647;padding:10px 14px;border:1px solid #7944bd;border-radius:10px;background:#24113c;color:#fff;font:600 13px system-ui,sans-serif;cursor:pointer;box-shadow:0 6px 20px #0008;display:none';
+  document.body.appendChild(launcher);
   panel.style.display = 'none';
 
   const style = document.createElement('style');
@@ -231,10 +255,14 @@
       && getComputedStyle(el).display !== 'none' && getComputedStyle(el).visibility !== 'hidden';
   }
   function roomPlayerCount() {
+    // Ở sảnh, dạng "4/5 Người" là số thành viên, không phải số ải.
+    const bodyText = String(document.body?.innerText || '').replace(panel?.innerText || '', '');
+    const explicit = bodyText.match(/(\d+)\s*\/\s*5\s*người\b/i);
+    if (explicit) return Number(explicit[1]);
     for (const selector of ROOM_COUNT_SELECTORS) {
       const el = $(selector);
       if (!isVisibleRoomElement(el)) continue;
-      const m = String(el.textContent || el.value || el.innerText || '').match(/\\d+/);
+      const m = String(el.textContent || el.value || el.innerText || '').match(/\d+/);
       if (m) return Number(m[0]);
     }
     let count = 0;
@@ -243,6 +271,12 @@
       count = Math.max(count, nodes.length);
     }
     return count;
+  }
+  function roomReadyCount() {
+    // Đọc nội bộ số "? Sẵn Sàng"; không hiển thị thêm bộ đếm trên panel.
+    const bodyText = String(document.body?.innerText || '').replace(panel?.innerText || '', '');
+    const m = bodyText.match(/(\d+)\s*sẵn\s*sàng\b/i);
+    return m ? Number(m[1]) : null;
   }
   function isUnreadyRow(row) {
     const t = norm(row?.innerText || row?.textContent || '');
@@ -431,12 +465,33 @@
   }
 
   function isRoomHost() {
+    // 1) Sảnh: nhận diện nhãn chữ "Chủ phòng" như các bản trước.
     const candidates = $$('body *').filter(el =>
       el !== panel && !panel.contains(el) && visible(el) &&
       /^(chủ phòng|chủ phòng 👑|host|room host)$/.test(norm(textOf(el))) &&
       el.children.length <= 3
     );
-    return candidates.length > 0;
+    if (candidates.length) return true;
+
+    // 2) Trong trận: nhãn chữ không còn xuất hiện; game đánh dấu chủ phòng
+    // bằng huy hiệu vương miện trên thẻ nhân vật. Tìm biểu tượng/nhãn liên quan
+    // tới crown/host trong DOM và kiểm tra nó đang hiển thị.
+    if (isCombat()) {
+      const crownNodes = $$('body *').filter(el => {
+        if (el === panel || panel.contains(el) || !visible(el)) return false;
+        const meta = norm([
+          el.textContent,
+          el.getAttribute?.('aria-label'), el.getAttribute?.('title'),
+          el.getAttribute?.('alt'), el.getAttribute?.('src'),
+          el.getAttribute?.('class'), el.getAttribute?.('data-icon')
+        ].filter(Boolean).join(' '));
+        const crownMark = /👑|crown|king|host|owner|leader|chu[-_ ]?phong/.test(meta);
+        // Hạn chế bắt nhầm cả khung thẻ chứa nội dung dài.
+        return crownMark && el.children.length <= 4 && (el.tagName === 'IMG' || el.children.length <= 2 || /👑/.test(meta));
+      });
+      if (crownNodes.length) return true;
+    }
+    return false;
   }
 
 
@@ -469,8 +524,131 @@
     return true;
   }
 
+  function roomRows() {
+    const all = [...new Set(ROOM_PLAYER_SELECTORS.flatMap(sel => $$(sel)))].filter(isVisibleRoomElement);
+    return all.filter(el => !all.some(other => other !== el && other.contains(el)))
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+  }
+  function roomFingerprint() {
+    const rows = roomRows();
+    if (rows.length) return rows.map((row, i) => `${i + 1}:${norm((row.innerText || row.textContent).split('\n')[0]).slice(0, 50)}`).join('|');
+    const count = roomPlayerCount();
+    return count ? `count:${count}` : '';
+  }
+  function resetPerfectForRosterChange() {
+    state.perfectStage = 1; state.difficulty = 'Ác Mộng'; state.stage = 0;
+    state.stageDone.clear(); state.lastCombatStage = 0;
+    state.perfectRewardHandled = false; state.perfectAdvancePending = false;
+    state.perfectStopAfterReturn = false; state.perfectKickIssued = false; state.perfectKickPending = false;
+    state.perfectStage3ChestCount = 0; state.lobbyWaitUntil = Date.now() + 3000; state.retryAfter = 0;
+    log('Phát hiện thành viên rời phòng hoặc bị trục xuất. Đã xóa tiến trình Perfect; quay lại giai đoạn 1 — Ác mộng.', 'warn');
+    saveRunProgress();
+  }
+  function kickFifthRoomMember() {
+    const rows = roomRows();
+    if (rows.length < 5) { setStatus(`Đủ 5 rương giai đoạn 3; chỉ nhận diện được ${rows.length} hàng thành viên, chưa trục xuất.`); return false; }
+    const button = findKickButton(rows[4]);
+    if (!button) { setStatus('Không tìm thấy nút trục xuất ở vị trí 5; không bấm nút khác để tránh nhầm người.'); return false; }
+    state.perfectKickIssued = true; state.perfectKickPending = true;
+    click(button, 'Perfect: trục xuất thành viên vị trí 5 sau 5 rương giai đoạn 3');
+    setStatus('Đã yêu cầu trục xuất vị trí 5; chờ xác nhận hoặc cập nhật phòng.'); saveRunProgress(); return true;
+  }
+  function findInviteCopyButton() {
+    return $$('button,a,[role="button"],[title],[aria-label]').find(el => isVisibleRoomElement(el) && !panel.contains(el) &&
+      /sao chép link mời|sao chep link moi|copy invite|invite link/i.test(
+        `${el.innerText || ''} ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-tooltip') || ''}`));
+  }
+  function findRestNonceInDocument(doc = document) {
+    const candidates = [window.wpApiSettings?.nonce, window._wpnonce, window.wp_rest_nonce,
+      window.bm?.nonce, window.BetterMessages?.nonce, window.better_messages?.nonce,
+      doc.querySelector('meta[name="wp-rest-nonce"]')?.content, doc.querySelector('input[name="_wpnonce"]')?.value];
+    for (const value of candidates) if (typeof value === 'string' && value.length >= 8) return value;
+    const scripts = [...doc.querySelectorAll('script')].map(el => el.textContent || '').join('\n');
+    const patterns = [/(?:wpApiSettings|restNonce|rest_nonce|wp_rest_nonce)["'\s:=,]+["']([a-zA-Z0-9_-]{8,})["']/i, /["']nonce["']\s*:\s*["']([a-zA-Z0-9_-]{8,})["']/i, /X-WP-Nonce.{0,80}?["']([a-zA-Z0-9_-]{8,})["']/i];
+    for (const re of patterns) { const m = scripts.match(re); if (m) return m[1]; }
+    return '';
+  }
+  async function obtainRestNonce() {
+    let nonce = findRestNonceInDocument(document);
+    if (nonce) return nonce;
+    // Nonce thường chỉ được nhúng ở trang Better Messages. Tải HTML cùng origin nền, không mở tab.
+    const page = await fetch('https://hoathinh3d.day/danh-sach-tin-nhan', { credentials: 'same-origin', cache: 'no-store' });
+    if (!page.ok) throw new Error(`Không tải được trang tin nhắn để lấy nonce (HTTP ${page.status}).`);
+    const html = await page.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    nonce = findRestNonceInDocument(doc);
+    if (!nonce) throw new Error('Không tìm thấy REST nonce trong trang Mê Cung hoặc HTML trang tin nhắn.');
+    return nonce;
+  }
+  async function sendInviteMessage(inviteUrl) {
+    const nonce = await obtainRestNonce();
+    const now = Date.now();
+    const payload = { message: inviteUrl, temp_id: `tmp_${CHAT_THREAD_ID}_${Math.floor(Math.random() * 900000000 + 100000000)}`, temp_time: now * 10, include_update: 1 };
+    const response = await fetch(`/wp-json/better-messages/v1/thread/${CHAT_THREAD_ID}/send?nocache=${now}`, {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce }, body: JSON.stringify(payload)
+    });
+    let data = null; try { data = await response.json(); } catch (_) {}
+    if (!response.ok || data?.result === false) throw new Error(`API gửi tin nhắn HTTP ${response.status}${data?.message ? `: ${data.message}` : ''}`);
+  }
+  async function maybeSendInviteMessage(forceForRosterChange = false, initialAfterAuto = false) {
+    // Chỉ gửi link ở chế độ Perfect khi Auto đang chạy và người dùng là chủ phòng.
+    // Lần đầu gửi ngay sau khi bấm Auto; các lần nhắc tiếp theo cách nhau 10 phút
+    // khi phòng vẫn chưa đủ 5 người.
+    if (!state.running || state.paused || state.mode !== 'full' || !isRoomHost()) return;
+    // Chặn các lời gọi đồng thời (ví dụ Auto và tick sảnh chạy sát nhau).
+    if (inviteSendInFlight) return;
+    const players = roomPlayerCount();
+    if (players >= 5 || players <= 0) return;
+    let lastSent = 0; try { lastSent = Number(localStorage.getItem(INVITE_SENT_KEY)) || 0; } catch (_) {}
+    const elapsed = Date.now() - lastSent;
+    if (initialAfterAuto) {
+      // Bỏ qua thời gian gửi lần trước: mỗi lần bấm Auto ở Perfect cần gửi lời mời ngay.
+    } else if (forceForRosterChange) {
+      if (elapsed < INVITE_EVENT_COOLDOWN_MS) return;
+    } else if (elapsed < INVITE_REMINDER_INTERVAL_MS) {
+      return;
+    }
+    const button = findInviteCopyButton(); if (!button) return;
+    inviteSendInFlight = true;
+    let copiedText = '';
+    const onCopy = ev => { const text = ev.clipboardData?.getData('text/plain'); if (text) copiedText = text; };
+    document.addEventListener('copy', onCopy, true);
+    try {
+      // Nút trong sảnh thật sự tạo/copy link mời. Bắt cả sự kiện copy và clipboard API.
+      button.click();
+      await sleep(250);
+      if (!copiedText && navigator.clipboard?.readText) {
+        try { copiedText = await navigator.clipboard.readText(); } catch (_) {}
+      }
+      let inviteUrl = (copiedText.match(/https?:\/\/[^\s"'<>]+/i) || [])[0] || '';
+      if (!inviteUrl) {
+        // Một số phiên bản HH3D hiển thị link trong tooltip, data-attribute hoặc input ẩn.
+        const nearby = [button, button.parentElement, button.closest('[data-invite-link]'), ...$$('[data-invite-link],input,textarea')].filter(Boolean);
+        for (const el of nearby) {
+          const raw = [el.value, el.href, el.dataset?.inviteLink, el.getAttribute?.('data-clipboard-text'), el.getAttribute?.('data-url')].filter(Boolean).join(' ');
+          const match = raw.match(/https?:\/\/[^\s"'<>]+/i);
+          if (match) { inviteUrl = match[0]; break; }
+        }
+      }
+      if (!inviteUrl) { log('Đã nhấn nút Sao chép link mời nhưng không đọc được nội dung clipboard/link; chưa gửi tin.', 'warn'); return; }
+      await sendInviteMessage(inviteUrl);
+      localStorage.setItem(INVITE_SENT_KEY, String(Date.now()));
+      log(initialAfterAuto ? 'Đã gửi link mời vào hội thoại 22239 sau khi bấm Auto.' : forceForRosterChange ? 'Đã gửi link mời vào hội thoại 22239.' : 'Đã gửi link mời nhắc lại sau 10 phút khi phòng chưa đủ 5 người.', 'good');
+    } catch (e) {
+      log(`Chưa gửi được link mời: ${e?.message || e}`, 'warn');
+    } finally { document.removeEventListener('copy', onCopy, true); inviteSendInFlight = false; }
+  }
   function updatePanelVisibility() {
-    panel.style.display = isRoomHost() ? '' : 'none';
+    const host = isRoomHost();
+    const inCombat = isCombat();
+    // Khi đang chạy, giữ panel hiển thị trong trận kể cả khi giao diện trận đấu
+    // không còn chứa nhãn Chủ phòng. Thu gọn/mở rộng chỉ đổi cách hiển thị,
+    // không ảnh hưởng vòng lặp tự động.
+    const keepVisibleInCombat = state.running && inCombat;
+    if (!host && !keepVisibleInCombat) panelOpen = false;
+    const showPanel = keepVisibleInCombat || (host && panelOpen);
+    panel.style.display = showPanel ? '' : 'none';
+    launcher.style.display = host && !panelOpen && !keepVisibleInCombat ? '' : 'none';
   }
 
   function stopAutoAttackForScan() {
@@ -498,18 +676,33 @@
     return '';
   }
   function currentStage() {
-    // Game hiển thị nhãn tiến trình dạng "Ải 4/5" (như giao diện trong ảnh).
-    // Ưu tiên mẫu này trước các mẫu tổng quát để tránh đọc nhầm số ải trong nội dung khác.
+    // Chỉ đọc số ải khi chắc chắn đang ở trong trận.
+    // Ở sảnh, dạng "?/5" là số người trong phòng, KHÔNG phải số ải.
+    if (!isCombat()) return 0;
     const raw = (document.body?.innerText || '').replace(panel.innerText, '');
     const t = norm(raw);
+    // Ưu tiên duy nhất nhãn có chữ "ải"; không suy luận từ số đơn lẻ "?/5".
     const explicit = t.match(/\bải\s*#?\s*([1-5])\s*\/\s*5\b/i);
     if (explicit) return Number(explicit[1]);
-
-    const patterns = [
-      /(?:ải|tầng|stage|phòng)\s*#?\s*([1-5])\b/i,
-      /\b([1-5])\s*\/\s*5\s*(?:ải|tầng|boss)?/i
-    ];
-    for (const p of patterns) { const m = t.match(p); if (m) return Number(m[1]); }
+    const labeled = t.match(/(?:ải|tầng|stage)\s*#?\s*([1-5])\b/i);
+    if (labeled) return Number(labeled[1]);
+    // Fallback: đếm các vòng tròn sáng ở cụm 5 vòng tròn góc trên-trái.
+    // Chỉ xét phần tử nhỏ, gần góc trên-trái và có hình tròn để tránh đếm UI khác.
+    const circles = $$('body *').filter(el => {
+      if (!isVisibleRoomElement(el) || el.children.length > 0) return false;
+      const r = el.getBoundingClientRect();
+      if (r.left < 0 || r.top < 0 || r.left > 340 || r.top > 190) return false;
+      if (r.width < 7 || r.height < 7 || r.width > 36 || r.height > 36) return false;
+      const cs = getComputedStyle(el);
+      const radius = parseFloat(cs.borderTopLeftRadius) || 0;
+      if (radius < Math.min(r.width, r.height) * 0.3) return false;
+      const color = cs.backgroundColor;
+      const nums = color.match(/[\d.]+/g)?.map(Number) || [];
+      const bright = nums.length >= 3 && Math.max(...nums.slice(0, 3)) >= 175 && (nums[3] === undefined || nums[3] > 0.15);
+      const cls = norm(`${el.className?.baseVal || el.className || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''}`);
+      return bright || /active|current|light|bright|sáng|sang|active-stage/.test(cls);
+    });
+    if (circles.length) return Math.min(5, circles.length);
     return 0;
   }
   function currentBossElement() {
@@ -574,8 +767,11 @@
   }
   function isCombat() {
     const t = norm((document.body?.innerText || '').replace(panel.innerText, ''));
-    return !!currentBossElement() ||
-      /đầu hàng|trạng thái:\s*(bình thường|đang chiến đấu)|liệt điểm ma cung|đang chiến đấu/.test(t);
+    // Dấu hiệu sảnh phải được ưu tiên: "?/5" tại đây là số thành viên.
+    const lobbyMarkers = /sao chép link mời|trục xuất|truc xuat|mở khóa|pháp tướng|sẵn sàng/.test(t);
+    const battleMarkers = /đầu hàng|trạng thái:\s*(bình thường|đang chiến đấu)|liệt điểm ma cung|đang chiến đấu|xác nhận đầu hàng/.test(t);
+    if (lobbyMarkers && !battleMarkers) return false;
+    return battleMarkers || !!currentBossElement();
   }
   function isRewardScreen() {
     const t = getVisibleText().replace(norm(panel.innerText), '');
@@ -593,7 +789,7 @@
   }
   function hasConfirmation() {
     const t = getVisibleText().replace(norm(panel.innerText), '');
-    return /xác nhận hành động|xác nhận đầu hàng|bắt đầu chinh phục mê cung/.test(t);
+    return /xác nhận hành động|xác nhận đầu hàng|xác nhận trục xuất|trục xuất thành viên|bắt đầu chinh phục mê cung/.test(t);
   }
   function confirmIfNeeded() {
     const t = getVisibleText().replace(norm(panel.innerText), '');
@@ -622,6 +818,15 @@
       const confirmStart = findClickable(/^xác nhận$/i);
       if (confirmStart) return click(confirmStart, `Xác nhận bắt đầu Mê Cung · ${state.mode}`);
       return false;
+    }
+    if (state.mode === 'full' && state.perfectKickPending && /xác nhận hành động|xác nhận trục xuất|trục xuất thành viên/.test(t)) {
+      const confirmKick = findClickable(/^xác nhận$/i);
+      if (confirmKick) {
+        click(confirmKick, 'Perfect: xác nhận trục xuất vị trí 5');
+        state.perfectKickPending = false;
+        stop('Perfect nghỉ sau 5 rương giai đoạn 3 và đã xác nhận trục xuất vị trí 5');
+        return true;
+      }
     }
     if (state.mode === 'farm' && /xác nhận hành động/.test(t)) return click(findClickable(/^xác nhận$/i), 'Farm: xác nhận thao tác');
     return false;
@@ -674,6 +879,38 @@
     // Đã rời màn rương; cho phép xử lý rương của chu trình kế tiếp.
     state.perfectRewardHandled = false;
     const mode = state.mode;
+    // Perfect: nếu đang ở sảnh mà chỉ còn 4 người, đặt lại toàn bộ tiến trình về giai đoạn 1.
+    // Chỉ reset khi thực sự có tiến trình cần đặt lại để tránh reset lặp ở mỗi tick.
+    if (mode === 'full') {
+      const lobbyPlayers = roomPlayerCount();
+      // Khi phòng chưa đủ 5 người, nhắc gửi lời mời theo chu kỳ 10 phút.
+      // Lần gửi đầu tiên được kích hoạt ngay trong hàm start() sau khi bấm Auto.
+      if (lobbyPlayers > 0 && lobbyPlayers < 5) void maybeSendInviteMessage(false);
+      const hasPerfectProgress = state.perfectStage !== 1 || state.stage > 0 ||
+        state.stageDone.size > 0 || state.lastCombatStage > 0 ||
+        state.perfectStage3ChestCount > 0 || state.perfectRewardHandled ||
+        state.perfectAdvancePending || state.perfectStopAfterReturn ||
+        state.perfectKickIssued || state.perfectKickPending;
+      if (lobbyPlayers === 4 && hasPerfectProgress) {
+        resetPerfectForRosterChange();
+        lastRoomFingerprint = roomFingerprint();
+        setStatus('Perfect: sảnh còn 4 người — đã xóa tiến trình và quay lại giai đoạn 1 (Ác Mộng). Chờ đủ 5 người.');
+        return;
+      }
+    }
+    if (mode === 'full' && state.perfectStopAfterReturn) {
+      if (!state.perfectKickIssued) { if (kickFifthRoomMember()) return; state.retryAfter = Date.now() + 2500; return; }
+      if (state.perfectKickIssued && !hasConfirmation()) { stop('Perfect nghỉ sau 5 rương giai đoạn 3; đã gửi yêu cầu trục xuất vị trí 5'); return; }
+    }
+    const fingerprint = roomFingerprint();
+    if (mode === 'full' && fingerprint) {
+      if (lastRoomFingerprint && fingerprint !== lastRoomFingerprint && !state.perfectKickIssued) {
+        lastRoomFingerprint = fingerprint;
+        resetPerfectForRosterChange();
+        return;
+      }
+      lastRoomFingerprint = fingerprint;
+    }
     const desired = mode === 'full' ? (state.perfectStage === 1 ? 'Ác Mộng' : state.perfectStage === 2 ? 'Khó' : 'Thường') : mode === 'grass' ? 'Khó' : '';
     // Mỗi lần vừa về sảnh, chỉ đợi 3 giây rồi đổi độ khó/bắt đầu.
     if (!state.lobbyWaitUntil) state.lobbyWaitUntil = Date.now() + 3000;
@@ -698,7 +935,11 @@
       const players = roomPlayerCount();
       const readiness = handleUnreadyPlayers();
       if (readiness.kicked) return;
-      if (players > 0 && players < roomSettings.requiredPlayers) {
+      if (mode === 'full' && players !== 5) {
+        setStatus(`Perfect: bắt buộc đủ đúng 5 người (${players}/5). Chờ đủ người.`);
+        return;
+      }
+      if (mode !== 'full' && players > 0 && players < roomSettings.requiredPlayers) {
         setStatus(`Đợi đủ người: ${players}/${roomSettings.requiredPlayers}`);
         return;
       }
@@ -893,16 +1134,20 @@
       if (!state.perfectRewardHandled) {
         const completedStage = state.perfectStage;
         state.perfectRewardHandled = true;
-        if (state.perfectStage === 1) state.perfectStage = 2;
+        if (completedStage === 3) {
+          state.perfectStage3ChestCount = Math.min(5, state.perfectStage3ChestCount + 1);
+          log(`Rương chinh phục giai đoạn 3: ${state.perfectStage3ChestCount}/5.`, 'good');
+          if (state.perfectStage3ChestCount >= 5) {
+            state.perfectStopAfterReturn = true;
+            log('Đủ 5 rương giai đoạn 3; khi về sảnh sẽ dừng và thử trục xuất người vị trí 5.', 'warn');
+          }
+        } else if (state.perfectStage === 1) state.perfectStage = 2;
         else if (state.perfectStage === 2) state.perfectStage = 3;
         state.perfectAdvancePending = false;
         state.difficulty = state.perfectStage === 2 ? 'Khó' : state.perfectStage === 3 ? 'Thường' : 'Ác Mộng';
-        log(
-          completedStage < 3
-            ? `Đã nhận rương Perfect giai đoạn ${completedStage}; chuyển ngay sang giai đoạn ${state.perfectStage} (${state.difficulty}).`
-            : `Đã nhận rương Perfect giai đoạn 3; hoàn tất chu trình Perfect.`,
-          'good'
-        );
+        log(completedStage < 3
+          ? `Đã nhận rương Perfect giai đoạn ${completedStage}; chuyển ngay sang giai đoạn ${state.perfectStage} (${state.difficulty}).`
+          : `Đã nhận rương Perfect giai đoạn 3 (${state.perfectStage3ChestCount}/5).`, 'good');
         saveRunProgress();
       }
       if (!returnButton) {
@@ -1107,16 +1352,20 @@
   }
 
   function start() {
+    try { sessionStorage.setItem(USER_STARTED_RUN_KEY, '1'); } catch (_) {}
     state.mode = ui.mode.value;
     state.farmElements = $$('.mc-stage-elements[data-stage]', panel).map(box => { const chosen = $$('input[data-element]:checked', box).map(el => el.dataset.element); return chosen.length ? chosen : ['Kim']; });
     state.running = true; state.paused = false; state.busy = false;
     state.perfectStage = 1;
+    state.perfectStage3ChestCount = 0; state.perfectStopAfterReturn = false; state.perfectKickIssued = false; state.perfectKickPending = false;
     state.perfectRewardHandled = false; state.perfectAdvancePending = false; state.deadRetreatPending = false;
     state.difficulty = state.mode === 'full' ? 'Ác Mộng' : state.mode === 'grass' ? 'Khó' : (currentDifficulty() || '');
     state.startedAt = Date.now(); state.stageDone.clear(); state.lastStartAt = 0; state.lastCombatStage = 0; state.farmScanUntil = 0; state.farmScanStage = 0; state.retryAfter = 0; state.lobbyWaitUntil = 0; state.stoppedReason = '';
+    lastRoomFingerprint = roomFingerprint();
     saveRunProgress();
     ui.elements.style.display = state.mode === 'grass' ? 'block' : 'none';
     setStatus('Đang chạy'); log(state.mode === 'farm' ? 'Bắt đầu chế độ Farm: giữ nguyên độ khó, tự bắt đầu và lặp sau mỗi lượt.' : `Bắt đầu chế độ ${state.mode}. Perfect khởi tạo tại giai đoạn 1 — Ác Mộng.`);
+    if (state.mode === 'full') void maybeSendInviteMessage(false, true);
     tick();
   }
   function clearRunProgress() {
@@ -1128,6 +1377,7 @@
     state.lastStartAt = 0;
     state.perfectStage = 1;
     state.perfectRewardHandled = false; state.perfectAdvancePending = false; state.deadRetreatPending = false;
+    state.perfectStage3ChestCount = 0; state.perfectStopAfterReturn = false; state.perfectKickIssued = false; state.perfectKickPending = false;
     state.retryAfter = 0;
     state.lobbyWaitUntil = 0;
     state.seenStage = '';
@@ -1137,6 +1387,7 @@
 
   function stop(reason = 'Đã dừng theo yêu cầu') {
     state.running = false; state.paused = false; state.busy = false;
+    try { sessionStorage.removeItem(USER_STARTED_RUN_KEY); } catch (_) {}
     clearRunProgress();
     clearSavedRunProgress();
     state.stoppedReason = reason;
@@ -1145,7 +1396,8 @@
     log(`${reason} · Đã xóa toàn bộ tiến trình; lần Bắt đầu sau sẽ ghi nhớ mới.`, 'warn');
   }
 
-  $('#mc-start', panel).addEventListener('click', start);
+  $('#mc-start', panel).addEventListener('click', () => { panelOpen = true; start(); updatePanelVisibility(); });
+  launcher.addEventListener('click', () => { panelOpen = true; updatePanelVisibility(); log('Panel đã mở. Chọn chế độ rồi bấm Auto để bắt đầu.'); });
   $('#mc-pause', panel).addEventListener('click', () => {
     if (!state.running) { log('Chưa bắt đầu chạy.', 'warn'); return; }
     state.paused = !state.paused;
@@ -1186,9 +1438,11 @@
   });
 
   ui.elements.style.display = 'none';
-  // Khôi phục phiên chạy được lưu trước khi trang reload.
+  // Chỉ khôi phục phiên chạy sau reload nếu người dùng đã bấm Auto trong tab này;
+  // mở panel lần đầu không tự bắt đầu.
   const resumed = restoreRunProgress();
-  if (!resumed) log('Panel đã sẵn sàng. Hãy chọn chế độ và bấm Bắt đầu.');
+  if (!resumed) log('Panel đã sẵn sàng. Hãy chọn chế độ và bấm Auto để bắt đầu.');
+  if (resumed) panelOpen = true;
   // Vòng lặp tự động chạy độc lập với trạng thái thu gọn/mở rộng của panel.
   setInterval(() => {
     if (checkExpiredSession()) return;
