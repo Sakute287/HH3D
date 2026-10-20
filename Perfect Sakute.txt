@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Sakute 3.5.3
+// @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.3
+// @version      3.5.4
 // @description  Fix Invitation
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
@@ -592,7 +592,8 @@
   async function sendInviteMessage(inviteUrl) {
     const nonce = await obtainRestNonce();
     const now = Date.now();
-    const payload = { message: inviteUrl, temp_id: `tmp_${CHAT_THREAD_ID}_${Math.floor(Math.random() * 900000000 + 100000000)}`, temp_time: now * 10, include_update: 1 };
+    const inviteMessage = `Mời bạn tham gia phòng Mê Cung HH3D!\nBấm vào liên kết bên dưới để tham gia:\n${inviteUrl}`;
+    const payload = { message: inviteMessage, temp_id: `tmp_${CHAT_THREAD_ID}_${Math.floor(Math.random() * 900000000 + 100000000)}`, temp_time: now * 10, include_update: 1 };
     const response = await fetch(`/wp-json/better-messages/v1/thread/${CHAT_THREAD_ID}/send?nocache=${now}`, {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': nonce }, body: JSON.stringify(payload)
     });
@@ -600,7 +601,7 @@
     if (!response.ok || data?.result === false) throw new Error(`API gửi tin nhắn HTTP ${response.status}${data?.message ? `: ${data.message}` : ''}`);
   }
   async function maybeSendInviteMessage(forceForRosterChange = false, initialAfterAuto = false) {
-    // Chỉ gửi link ở chế độ Perfect khi Auto đang chạy và người dùng là chủ phòng.
+    // Gửi đầy đủ lời mời kèm liên kết ở chế độ Perfect khi Auto đang chạy và người dùng là chủ phòng.
     // Lần đầu gửi ngay sau khi bấm Auto; các lần nhắc tiếp theo cách nhau 10 phút
     // khi phòng vẫn chưa đủ 5 người.
     if (!state.running || state.paused || state.mode !== 'full' || !isRoomHost()) return;
@@ -642,9 +643,9 @@
       if (!inviteUrl) { log('Đã nhấn nút Sao chép link mời nhưng không đọc được nội dung clipboard/link; chưa gửi tin.', 'warn'); return; }
       await sendInviteMessage(inviteUrl);
       localStorage.setItem(INVITE_SENT_KEY, String(Date.now()));
-      log(initialAfterAuto ? 'Đã gửi link mời vào hội thoại 22239 sau khi bấm Auto.' : forceForRosterChange ? 'Đã gửi link mời vào hội thoại 22239.' : 'Đã gửi link mời nhắc lại sau 10 phút khi phòng chưa đủ 5 người.', 'good');
+      log(initialAfterAuto ? 'Đã gửi đầy đủ lời mời kèm liên kết vào hội thoại 22239 sau khi bấm Auto.' : forceForRosterChange ? 'Đã gửi đầy đủ lời mời vào hội thoại 22239.' : 'Đã gửi đầy đủ lời mời nhắc lại sau 10 phút khi phòng chưa đủ 5 người.', 'good');
     } catch (e) {
-      log(`Chưa gửi được link mời: ${e?.message || e}`, 'warn');
+      log(`Chưa gửi được lời mời: ${e?.message || e}`, 'warn');
     } finally { document.removeEventListener('copy', onCopy, true); inviteSendInFlight = false; }
   }
   function updatePanelVisibility() {
