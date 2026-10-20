@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.6
-// @description  Link refreshing
+// @version      3.5.7
+// @description  Link refeshing
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -571,49 +571,64 @@
     return $$('button,a,[role="button"],[title],[aria-label]').find(el => isVisibleRoomElement(el) && !panel.contains(el) &&
       /sao chép link mời|sao chep link moi|copy invite|invite link|lấy lời mời|lay loi moi/i.test(controlLabel(el)));
   }
-  function findRoomRefreshButton(kind) {
+  function findRoomToggleButton() {
     const invite = findInviteCopyButton();
     if (!invite) return null;
-    const re = kind === 'open'
-      ? /mở khóa|mo khoa|mở phòng|mo phong|unlock room|open room/
-      : /khóa phòng|khoa phong|khóa|khoa|đóng phòng|dong phong|lock room/;
-    const candidates = $$('button,a,[role="button"],[title],[aria-label]').filter(el =>
-      isVisibleRoomElement(el) && !panel.contains(el) && el !== invite && re.test(controlLabel(el)));
-    if (candidates.length) return candidates.sort((a,b) => {
-      const ar=a.getBoundingClientRect(), br=b.getBoundingClientRect(), ir=invite.getBoundingClientRect();
-      const ad=ar.right <= ir.left + 5 ? ir.left-ar.right : 100000 + Math.abs(ar.left-ir.left);
-      const bd=br.right <= ir.left + 5 ? ir.left-br.right : 100000 + Math.abs(br.left-ir.left);
-      return ad-bd;
-    })[0];
-    // Fallback: the room toggle is commonly the button immediately to the left of the invite-copy button.
     const ir = invite.getBoundingClientRect();
-    const left = $$('button,a,[role="button"]').filter(el => isVisibleRoomElement(el) && !panel.contains(el) && el !== invite)
-      .map(el => ({el, r:el.getBoundingClientRect()})).filter(x => x.r.right <= ir.left + 5 && Math.abs(x.r.top-ir.top) < 45)
-      .sort((a,b) => (ir.left-a.r.right)-(ir.left-b.r.right));
-    return left[0]?.el || null;
+    // Chỉ xét điều khiển nằm bên trái và gần cùng hàng với nút lấy lời mời.
+    const nearby = $$('button,a,[role="button"],[title],[aria-label]')
+      .filter(el => isVisibleRoomElement(el) && !panel.contains(el) && el !== invite)
+      .map(el => ({ el, r: el.getBoundingClientRect(), label: controlLabel(el) }))
+      .filter(x => x.r.right <= ir.left + 8 && Math.abs(x.r.top - ir.top) < 55)
+      .sort((a, b) => (ir.left - a.r.right) - (ir.left - b.r.right));
+    const explicit = nearby.find(x => /mở khóa|mo khoa|mở phòng|mo phong|unlock room|open room|khóa phòng|khoa phong|đóng phòng|dong phong|lock room/.test(x.label));
+    if (explicit) return explicit.el;
+    return nearby[0]?.el || null;
+  }
+  function roomToggleState(button) {
+    const label = controlLabel(button);
+    // Nhãn mở khóa/mở phòng nghĩa là phòng hiện đang khóa.
+    if (/mở khóa|mo khoa|mở phòng|mo phong|unlock room|open room/.test(label)) return 'locked';
+    // Nhãn khóa phòng/đóng phòng nghĩa là phòng hiện đang mở.
+    if (/khóa phòng|khoa phong|đóng phòng|dong phong|lock room/.test(label)) return 'open';
+    return 'unknown';
   }
   async function refreshInviteByRoomToggleIfAllowed() {
+    let toggle = findRoomToggleButton();
+    if (!toggle) {
+      log('Không tìm thấy nút trạng thái phòng bên trái nút lấy lời mời; không bấm nút nào để tránh nhầm lẫn.', 'warn');
+      return false;
+    }
+    const initialState = roomToggleState(toggle);
+    if (initialState === 'open') {
+      log('Phòng đang mở (nút hiển thị Khóa phòng); giữ nguyên trạng thái, không khóa/mở lại và lấy lời mời hiện tại.', 'info');
+      return false;
+    }
+    if (initialState !== 'locked') {
+      log('Không xác định chắc chắn phòng đang mở hay khóa từ nhãn nút; bỏ qua thao tác làm mới để tránh nhầm lẫn.', 'warn');
+      return false;
+    }
     let last = 0; try { last = Number(localStorage.getItem(ROOM_REFRESH_LOCK_KEY)) || 0; } catch (_) {}
     if (Date.now() - last < ROOM_REFRESH_COOLDOWN_MS) {
-      log('Lần mở/khóa phòng gần nhất chưa đủ 30 phút; lấy lời mời hiện tại và gửi mà không mở/khóa phòng.', 'info');
+      log('Phòng đang khóa nhưng lần mở/khóa gần nhất chưa đủ 30 phút; lấy lời mời hiện tại mà không thay đổi trạng thái phòng.', 'info');
       return false;
     }
-    let openButton = findRoomRefreshButton('open');
-    if (!openButton) {
-      log('Không nhận diện chắc chắn được nút Mở phòng/Mở khóa phòng ở bên trái nút lấy lời mời; bỏ qua thao tác mở/khóa để tránh bấm nhầm.', 'warn');
-      return false;
-    }
-    click(openButton, 'Làm mới lời mời: mở/mở khóa phòng');
+    click(toggle, 'Làm mới lời mời: phòng đang khóa — mở khóa phòng');
     await sleep(700);
-    const lockButton = findRoomRefreshButton('lock');
-    if (!lockButton) {
-      log('Đã bấm mở/mở khóa phòng nhưng không tìm thấy nút Khóa phòng để hoàn tất; sẽ tiếp tục lấy lời mời hiện tại.', 'warn');
+    toggle = findRoomToggleButton();
+    if (!toggle || roomToggleState(toggle) !== 'open') {
+      log('Đã yêu cầu mở khóa phòng nhưng trạng thái nút không chuyển sang Khóa phòng; không bấm thêm nút để tránh thao tác nhầm.', 'warn');
       return false;
     }
-    click(lockButton, 'Làm mới lời mời: khóa phòng');
+    click(toggle, 'Làm mới lời mời: khóa lại phòng sau khi mở khóa');
+    await sleep(700);
+    const finalToggle = findRoomToggleButton();
+    if (!finalToggle || roomToggleState(finalToggle) !== 'locked') {
+      log('Đã yêu cầu khóa lại nhưng không thể xác nhận trạng thái phòng; kiểm tra phòng thủ công.', 'warn');
+      return false;
+    }
     try { localStorage.setItem(ROOM_REFRESH_LOCK_KEY, String(Date.now())); } catch (_) {}
-    await sleep(700);
-    log('Đã mở rồi khóa phòng để làm mới lời mời.', 'good');
+    log('Phòng ban đầu đang khóa: đã mở khóa rồi khóa lại để làm mới lời mời.', 'good');
     return true;
   }
   function findRestNonceInDocument(doc = document) {
