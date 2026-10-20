@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.8
-// @description  Link refreshing
+// @version      3.5.9
+// @description  Ác mộng: gg khi hẹo
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -1348,23 +1348,23 @@
     const activeDifficulty = currentDifficulty() || state.difficulty || '';
     const isNightmare = /ác mộng/i.test(activeDifficulty) || (state.mode === 'full' && state.perfectStage === 1);
     if (!isNightmare && !state.deadRetreatPending) return false;
-    if (!state.deadRetreatPending && isNightmare && deadCount > 2 && isCombat()) {
+    if (!state.deadRetreatPending && isNightmare && deadCount > 3 && isCombat()) {
       state.deadRetreatPending = true;
-      setStatus(`Có ${deadCount} người đã chết (>2) · tự đầu hàng để thử lại`);
+      setStatus(`Có ${deadCount} người đã chết (>3) · tự đầu hàng để thử lại`);
       log(`Phát hiện ${deadCount} người đã chết; đầu hàng và quay về phòng để thử lại.`, 'warn');
     }
     if (!state.deadRetreatPending) return false;
 
     const confirm = findClickable(/^xác nhận$/i);
     if (/xác nhận đầu hàng|xác nhận hành động/.test(t) && confirm) {
-      click(confirm, 'Xác nhận đầu hàng khi có hơn 2 người chết');
+      click(confirm, 'Xác nhận đầu hàng khi có từ 4 người chết trở lên');
       await sleep(400);
       return true;
     }
     if (/thất bại|đầu hàng thành công|đã đầu hàng|kết thúc lượt/.test(t)) {
       const back = findClickable(/quay về phòng|về phòng|quay về sảnh|về sảnh|trở về phòng|trở về sảnh|xác nhận|đồng ý/i);
       if (back) {
-        click(back, 'Quay về phòng sau khi đầu hàng do hơn 2 người chết');
+        click(back, 'Quay về phòng sau khi đầu hàng do từ 4 người chết trở lên');
         state.deadRetreatPending = false;
         state.retryAfter = Date.now() + 1000;
         await sleep(700);
@@ -1374,12 +1374,12 @@
     if (isCombat()) {
       const abandon = findClickable(/đầu hàng/i);
       if (abandon && !/xác nhận đầu hàng/.test(t)) {
-        click(abandon, 'Đầu hàng khi có hơn 2 người chết');
+        click(abandon, 'Đầu hàng khi có từ 4 người chết trở lên');
         await sleep(350);
         const after = getVisibleText().replace(norm(panel.innerText), '');
         if (/xác nhận đầu hàng|xác nhận hành động/.test(after)) {
           const yes = findClickable(/^xác nhận$/i);
-          if (yes) click(yes, 'Xác nhận đầu hàng khi có hơn 2 người chết');
+          if (yes) click(yes, 'Xác nhận đầu hàng khi có từ 4 người chết trở lên');
         }
         return true;
       }
