@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Sakute 3.5.5
+// @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.5
-// @description  Invitation
+// @version      3.5.6
+// @description  Link refreshing
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -27,6 +27,8 @@
   const ROOM_SETTINGS_KEY = 'hh3d_maze_config_v2';
   const RUN_PROGRESS_KEY = 'hh3d_maze_run_progress_v1';
   const INVITE_SENT_KEY = 'hh3d_maze_invite_last_event_v1';
+  const ROOM_REFRESH_LOCK_KEY = 'hh3d_maze_invite_room_refresh_last_v1';
+  const ROOM_REFRESH_COOLDOWN_MS = 30 * 60 * 1000;
   const INVITE_EVENT_COOLDOWN_MS = 8000;
   const INVITE_REMINDER_INTERVAL_MS = 10 * 60 * 1000;
   let lastInviteRosterFingerprint = '';
@@ -562,10 +564,57 @@
     click(button, 'Perfect: trục xuất thành viên vị trí 5 sau 5 rương giai đoạn 3');
     setStatus('Đã yêu cầu trục xuất vị trí 5; chờ xác nhận hoặc cập nhật phòng.'); saveRunProgress(); return true;
   }
+  function controlLabel(el) {
+    return norm(`${el?.innerText || ''} ${el?.getAttribute('title') || ''} ${el?.getAttribute('aria-label') || ''} ${el?.getAttribute('data-tooltip') || ''}`);
+  }
   function findInviteCopyButton() {
     return $$('button,a,[role="button"],[title],[aria-label]').find(el => isVisibleRoomElement(el) && !panel.contains(el) &&
-      /sao chép link mời|sao chep link moi|copy invite|invite link/i.test(
-        `${el.innerText || ''} ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-tooltip') || ''}`));
+      /sao chép link mời|sao chep link moi|copy invite|invite link|lấy lời mời|lay loi moi/i.test(controlLabel(el)));
+  }
+  function findRoomRefreshButton(kind) {
+    const invite = findInviteCopyButton();
+    if (!invite) return null;
+    const re = kind === 'open'
+      ? /mở khóa|mo khoa|mở phòng|mo phong|unlock room|open room/
+      : /khóa phòng|khoa phong|khóa|khoa|đóng phòng|dong phong|lock room/;
+    const candidates = $$('button,a,[role="button"],[title],[aria-label]').filter(el =>
+      isVisibleRoomElement(el) && !panel.contains(el) && el !== invite && re.test(controlLabel(el)));
+    if (candidates.length) return candidates.sort((a,b) => {
+      const ar=a.getBoundingClientRect(), br=b.getBoundingClientRect(), ir=invite.getBoundingClientRect();
+      const ad=ar.right <= ir.left + 5 ? ir.left-ar.right : 100000 + Math.abs(ar.left-ir.left);
+      const bd=br.right <= ir.left + 5 ? ir.left-br.right : 100000 + Math.abs(br.left-ir.left);
+      return ad-bd;
+    })[0];
+    // Fallback: the room toggle is commonly the button immediately to the left of the invite-copy button.
+    const ir = invite.getBoundingClientRect();
+    const left = $$('button,a,[role="button"]').filter(el => isVisibleRoomElement(el) && !panel.contains(el) && el !== invite)
+      .map(el => ({el, r:el.getBoundingClientRect()})).filter(x => x.r.right <= ir.left + 5 && Math.abs(x.r.top-ir.top) < 45)
+      .sort((a,b) => (ir.left-a.r.right)-(ir.left-b.r.right));
+    return left[0]?.el || null;
+  }
+  async function refreshInviteByRoomToggleIfAllowed() {
+    let last = 0; try { last = Number(localStorage.getItem(ROOM_REFRESH_LOCK_KEY)) || 0; } catch (_) {}
+    if (Date.now() - last < ROOM_REFRESH_COOLDOWN_MS) {
+      log('Lần mở/khóa phòng gần nhất chưa đủ 30 phút; lấy lời mời hiện tại và gửi mà không mở/khóa phòng.', 'info');
+      return false;
+    }
+    let openButton = findRoomRefreshButton('open');
+    if (!openButton) {
+      log('Không nhận diện chắc chắn được nút Mở phòng/Mở khóa phòng ở bên trái nút lấy lời mời; bỏ qua thao tác mở/khóa để tránh bấm nhầm.', 'warn');
+      return false;
+    }
+    click(openButton, 'Làm mới lời mời: mở/mở khóa phòng');
+    await sleep(700);
+    const lockButton = findRoomRefreshButton('lock');
+    if (!lockButton) {
+      log('Đã bấm mở/mở khóa phòng nhưng không tìm thấy nút Khóa phòng để hoàn tất; sẽ tiếp tục lấy lời mời hiện tại.', 'warn');
+      return false;
+    }
+    click(lockButton, 'Làm mới lời mời: khóa phòng');
+    try { localStorage.setItem(ROOM_REFRESH_LOCK_KEY, String(Date.now())); } catch (_) {}
+    await sleep(700);
+    log('Đã mở rồi khóa phòng để làm mới lời mời.', 'good');
+    return true;
   }
   function findRestNonceInDocument(doc = document) {
     const candidates = [window.wpApiSettings?.nonce, window._wpnonce, window.wp_rest_nonce,
@@ -600,7 +649,7 @@
     let data = null; try { data = await response.json(); } catch (_) {}
     if (!response.ok || data?.result === false) throw new Error(`API gửi tin nhắn HTTP ${response.status}${data?.message ? `: ${data.message}` : ''}`);
   }
-  async function maybeSendInviteMessage(forceForRosterChange = false, initialAfterAuto = false) {
+  async function maybeSendInviteMessage(forceForRosterChange = false, initialAfterAuto = false, refreshRoomForRosterChange = false) {
     // Gửi đầy đủ lời mời kèm liên kết ở chế độ Perfect khi Auto đang chạy và người dùng là chủ phòng.
     // Lần đầu gửi ngay sau khi bấm Auto; các lần nhắc tiếp theo cách nhau 10 phút
     // khi phòng vẫn chưa đủ 5 người.
@@ -624,8 +673,12 @@
     const onCopy = ev => { const text = ev.clipboardData?.getData('text/plain'); if (text) copiedText = text; };
     document.addEventListener('copy', onCopy, true);
     try {
-      // Nút trong sảnh thật sự tạo/copy link mời. Bắt cả sự kiện copy và clipboard API.
-      button.click();
+      // Chỉ khi thành viên rời phòng/bị trục xuất mới thử mở rồi khóa phòng để làm mới lời mời.
+      // Auto ban đầu và nhắc 10 phút chỉ lấy nguyên văn lời mời hiện tại.
+      if (refreshRoomForRosterChange) await refreshInviteByRoomToggleIfAllowed();
+      const refreshedButton = findInviteCopyButton() || button;
+      // Nút trong sảnh tạo/copy nguyên văn lời mời; bắt sự kiện copy và clipboard API.
+      refreshedButton.click();
       await sleep(250);
       if (!copiedText && navigator.clipboard?.readText) {
         try { copiedText = await navigator.clipboard.readText(); } catch (_) {}
@@ -918,6 +971,8 @@
       if (lastRoomFingerprint && fingerprint !== lastRoomFingerprint && !state.perfectKickIssued) {
         lastRoomFingerprint = fingerprint;
         resetPerfectForRosterChange();
+        // Chỉ sự kiện thành viên rời/bị trục xuất mới được phép làm mới lời mời bằng mở/khóa phòng.
+        void maybeSendInviteMessage(true, false, true);
         return;
       }
       lastRoomFingerprint = fingerprint;
