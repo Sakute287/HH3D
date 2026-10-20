@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.7
-// @description  Link refeshing
+// @version      3.5.8
+// @description  Link refreshing
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -665,9 +665,9 @@
     if (!response.ok || data?.result === false) throw new Error(`API gửi tin nhắn HTTP ${response.status}${data?.message ? `: ${data.message}` : ''}`);
   }
   async function maybeSendInviteMessage(forceForRosterChange = false, initialAfterAuto = false, refreshRoomForRosterChange = false) {
-    // Gửi đầy đủ lời mời kèm liên kết ở chế độ Perfect khi Auto đang chạy và người dùng là chủ phòng.
-    // Lần đầu gửi ngay sau khi bấm Auto; các lần nhắc tiếp theo cách nhau 10 phút
-    // khi phòng vẫn chưa đủ 5 người.
+    // Gửi lời mời trong Perfect khi Auto đang chạy, là chủ phòng và phòng chưa đủ 5 người.
+    // Lần Auto đầu tiên chỉ lấy/gửi lời mời hiện tại, tuyệt đối không làm mới bằng mở/khóa phòng.
+    // Chỉ khi phòng chưa đủ 5 người và có thay đổi thành viên mới được thử làm mới; nhắc lại mỗi 10 phút.
     if (!state.running || state.paused || state.mode !== 'full' || !isRoomHost()) return;
     // Chặn các lời gọi đồng thời (ví dụ Auto và tick sảnh chạy sát nhau).
     if (inviteSendInFlight) return;
@@ -688,9 +688,12 @@
     const onCopy = ev => { const text = ev.clipboardData?.getData('text/plain'); if (text) copiedText = text; };
     document.addEventListener('copy', onCopy, true);
     try {
-      // Chỉ khi thành viên rời phòng/bị trục xuất mới thử mở rồi khóa phòng để làm mới lời mời.
-      // Auto ban đầu và nhắc 10 phút chỉ lấy nguyên văn lời mời hiện tại.
-      if (refreshRoomForRosterChange) await refreshInviteByRoomToggleIfAllowed();
+      // Làm mới chỉ áp dụng khi phòng chưa đủ 5 người, có thay đổi thành viên,
+      // và không phải lần gửi đầu tiên sau khi bấm Auto.
+      // Nếu phòng đủ 5 người hoặc đây là lần Auto đầu, tuyệt đối không mở/khóa phòng.
+      if (refreshRoomForRosterChange && !initialAfterAuto && players < 5) {
+        await refreshInviteByRoomToggleIfAllowed();
+      }
       const refreshedButton = findInviteCopyButton() || button;
       // Nút trong sảnh tạo/copy nguyên văn lời mời; bắt sự kiện copy và clipboard API.
       refreshedButton.click();
