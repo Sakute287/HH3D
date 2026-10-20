@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Sakute 3.5.2
+// @name         Sakute 3.5.3
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.2
+// @version      3.5.3
 // @description  Nhận diện chủ phòng bằng huy hiệu vương miện trong trận; panel giữ trạng thái khi Auto chạy
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
@@ -544,12 +544,13 @@
     return count ? `count:${count}` : '';
   }
   function resetPerfectForRosterChange() {
-    state.perfectStage = 1; state.difficulty = 'Ác Mộng'; state.stage = 0;
+    const selectedStart = clampInt($('#mc-perfect-start', panel)?.value, 1, 2, 1);
+    state.perfectStage = selectedStart; state.difficulty = selectedStart === 1 ? 'Ác Mộng' : 'Khó'; state.stage = 0;
     state.stageDone.clear(); state.lastCombatStage = 0;
     state.perfectRewardHandled = false; state.perfectAdvancePending = false;
     state.perfectStopAfterReturn = false; state.perfectKickIssued = false; state.perfectKickPending = false;
     state.perfectStage3ChestCount = 0; state.lobbyWaitUntil = Date.now() + 3000; state.retryAfter = 0;
-    log('Phát hiện thành viên rời phòng hoặc bị trục xuất. Đã xóa tiến trình Perfect; quay lại giai đoạn 1 — Ác mộng.', 'warn');
+    log(`Phát hiện thành viên rời phòng hoặc bị trục xuất. Đã xóa tiến trình Perfect; quay lại tùy chọn bắt đầu giai đoạn ${selectedStart} — ${state.difficulty}.`, 'warn');
     saveRunProgress();
   }
   function kickFifthRoomMember() {
@@ -832,7 +833,8 @@
       if (confirmKick) {
         click(confirmKick, 'Perfect: xác nhận trục xuất vị trí 5');
         state.perfectKickPending = false;
-        stop('Perfect nghỉ sau 5 rương giai đoạn 3 và đã xác nhận trục xuất vị trí 5');
+        log('Đã xác nhận trục xuất người vị trí 5; chờ phòng cập nhật rồi tự khởi động vòng Perfect mới.', 'good');
+        saveRunProgress();
         return true;
       }
     }
@@ -894,21 +896,31 @@
       // Khi phòng chưa đủ 5 người, nhắc gửi lời mời theo chu kỳ 10 phút.
       // Lần gửi đầu tiên được kích hoạt ngay trong hàm start() sau khi bấm Auto.
       if (lobbyPlayers > 0 && lobbyPlayers < 5) void maybeSendInviteMessage(false);
-      const hasPerfectProgress = state.perfectStage !== 1 || state.stage > 0 ||
-        state.stageDone.size > 0 || state.lastCombatStage > 0 ||
-        state.perfectStage3ChestCount > 0 || state.perfectRewardHandled ||
-        state.perfectAdvancePending || state.perfectStopAfterReturn ||
-        state.perfectKickIssued || state.perfectKickPending;
-      if (lobbyPlayers === 4 && hasPerfectProgress) {
-        resetPerfectForRosterChange();
-        lastRoomFingerprint = roomFingerprint();
-        setStatus('Perfect: sảnh còn 4 người — đã xóa tiến trình và quay lại giai đoạn 1 (Ác Mộng). Chờ đủ 5 người.');
-        return;
-      }
     }
     if (mode === 'full' && state.perfectStopAfterReturn) {
       if (!state.perfectKickIssued) { if (kickFifthRoomMember()) return; state.retryAfter = Date.now() + 2500; return; }
-      if (state.perfectKickIssued && !hasConfirmation()) { stop('Perfect nghỉ sau 5 rương giai đoạn 3; đã gửi yêu cầu trục xuất vị trí 5'); return; }
+      // Sau khi trục xuất xong, chờ số người giảm rồi khởi động vòng mới theo tùy chọn Perfect.
+      if (state.perfectKickIssued && !hasConfirmation()) {
+        const countAfterKick = roomPlayerCount();
+        if (countAfterKick > 0 && countAfterKick < 5) {
+          const selectedStart = clampInt($('#mc-perfect-start', panel)?.value, 1, 2, 1);
+          state.perfectStage = selectedStart;
+          state.difficulty = selectedStart === 1 ? 'Ác Mộng' : 'Khó';
+          state.stage = 0; state.stageDone.clear(); state.lastCombatStage = 0;
+          state.perfectRewardHandled = false; state.perfectAdvancePending = false;
+          state.perfectStage3ChestCount = 0; state.perfectStopAfterReturn = false;
+          state.perfectKickIssued = false; state.perfectKickPending = false;
+          state.retryAfter = 0; state.lobbyWaitUntil = Date.now() + 3000;
+          lastRoomFingerprint = roomFingerprint();
+          log(`Đã trục xuất người vị trí 5. Tự bắt đầu vòng Perfect mới từ giai đoạn ${selectedStart} — ${state.difficulty}.`, 'good');
+          setStatus(`Vòng Perfect mới · bắt đầu từ ${state.difficulty}`);
+          saveRunProgress();
+        } else {
+          setStatus(`Đã yêu cầu trục xuất người vị trí 5; chờ phòng cập nhật (${countAfterKick || '?'}/5).`);
+          state.retryAfter = Date.now() + 1500;
+        }
+        return;
+      }
     }
     const fingerprint = roomFingerprint();
     if (mode === 'full' && fingerprint) {
@@ -943,8 +955,12 @@
       const players = roomPlayerCount();
       const readiness = handleUnreadyPlayers();
       if (readiness.kicked) return;
-      if (mode === 'full' && players !== 5) {
-        setStatus(`Perfect: bắt buộc đủ đúng 5 người (${players}/5). Chờ đủ người.`);
+      if (mode === 'full' && state.perfectStage === 1 && players !== 5) {
+        setStatus(`Perfect · Ác Mộng: bắt buộc đủ đúng 5 người (${players}/5). Chờ đủ người.`);
+        return;
+      }
+      if (mode === 'full' && state.perfectStage !== 1 && players > 0 && players < roomSettings.requiredPlayers) {
+        setStatus(`Perfect · ${state.difficulty}: đợi đủ người tối thiểu ${players}/${roomSettings.requiredPlayers}`);
         return;
       }
       if (mode !== 'full' && players > 0 && players < roomSettings.requiredPlayers) {
@@ -1147,7 +1163,7 @@
           log(`Rương chinh phục giai đoạn 3: ${state.perfectStage3ChestCount}/5.`, 'good');
           if (state.perfectStage3ChestCount >= 5) {
             state.perfectStopAfterReturn = true;
-            log('Đủ 5 rương giai đoạn 3; khi về sảnh sẽ dừng và thử trục xuất người vị trí 5.', 'warn');
+            log('Đủ 5 rương giai đoạn 3; khi về sảnh sẽ trục xuất người vị trí 5 rồi tự bắt đầu vòng Perfect mới.', 'warn');
           }
         } else if (state.perfectStage === 1) state.perfectStage = 2;
         else if (state.perfectStage === 2) state.perfectStage = 3;
