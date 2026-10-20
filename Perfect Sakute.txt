@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Sakute 3.5.0
+// @name         Sakute 3.5.2
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.0
+// @version      3.5.2
 // @description  Nhận diện chủ phòng bằng huy hiệu vương miện trong trận; panel giữ trạng thái khi Auto chạy
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
@@ -152,6 +152,14 @@
           <option value="farm">Farm — chạy liên tục, giữ nguyên độ khó</option>
         </select>
       </label>
+      <div id="mc-perfect-start-wrap">
+        <label>Bắt đầu Perfect từ
+          <select id="mc-perfect-start">
+            <option value="1">Ác Mộng — Giai đoạn 1</option>
+            <option value="2">Khó — Giai đoạn 2</option>
+          </select>
+        </label>
+      </div>
       <div id="mc-elements">
         <div class="mc-subtitle">Hệ boss cần đánh theo từng ải (chọn Bỏ để không dò)</div>
         <div class="mc-element-grid">
@@ -1356,15 +1364,15 @@
     state.mode = ui.mode.value;
     state.farmElements = $$('.mc-stage-elements[data-stage]', panel).map(box => { const chosen = $$('input[data-element]:checked', box).map(el => el.dataset.element); return chosen.length ? chosen : ['Kim']; });
     state.running = true; state.paused = false; state.busy = false;
-    state.perfectStage = 1;
+    state.perfectStage = state.mode === 'full' ? clampInt($('#mc-perfect-start', panel)?.value, 1, 2, 1) : 1;
     state.perfectStage3ChestCount = 0; state.perfectStopAfterReturn = false; state.perfectKickIssued = false; state.perfectKickPending = false;
     state.perfectRewardHandled = false; state.perfectAdvancePending = false; state.deadRetreatPending = false;
-    state.difficulty = state.mode === 'full' ? 'Ác Mộng' : state.mode === 'grass' ? 'Khó' : (currentDifficulty() || '');
+    state.difficulty = state.mode === 'full' ? (state.perfectStage === 2 ? 'Khó' : 'Ác Mộng') : state.mode === 'grass' ? 'Khó' : (currentDifficulty() || '');
     state.startedAt = Date.now(); state.stageDone.clear(); state.lastStartAt = 0; state.lastCombatStage = 0; state.farmScanUntil = 0; state.farmScanStage = 0; state.retryAfter = 0; state.lobbyWaitUntil = 0; state.stoppedReason = '';
     lastRoomFingerprint = roomFingerprint();
     saveRunProgress();
     ui.elements.style.display = state.mode === 'grass' ? 'block' : 'none';
-    setStatus('Đang chạy'); log(state.mode === 'farm' ? 'Bắt đầu chế độ Farm: giữ nguyên độ khó, tự bắt đầu và lặp sau mỗi lượt.' : `Bắt đầu chế độ ${state.mode}. Perfect khởi tạo tại giai đoạn 1 — Ác Mộng.`);
+    setStatus('Đang chạy'); log(state.mode === 'farm' ? 'Bắt đầu chế độ Farm: giữ nguyên độ khó, tự bắt đầu và lặp sau mỗi lượt.' : state.mode === 'full' ? `Bắt đầu chế độ Perfect tại giai đoạn ${state.perfectStage} — ${state.perfectStage === 1 ? 'Ác Mộng' : 'Khó'}.` : `Bắt đầu chế độ ${state.mode}.`);
     if (state.mode === 'full') void maybeSendInviteMessage(false, true);
     tick();
   }
@@ -1431,6 +1439,7 @@
 
   $('#mc-mode', panel).addEventListener('change', () => {
     ui.elements.style.display = ui.mode.value === 'grass' ? 'block' : 'none';
+    $('#mc-perfect-start-wrap', panel).style.display = ui.mode.value === 'full' ? 'block' : 'none';
   });
   $('#mc-min', panel).addEventListener('click', () => {
     panel.classList.toggle('mc-collapsed');
@@ -1438,6 +1447,7 @@
   });
 
   ui.elements.style.display = 'none';
+  $('#mc-perfect-start-wrap', panel).style.display = ui.mode.value === 'full' ? 'block' : 'none';
   // Chỉ khôi phục phiên chạy sau reload nếu người dùng đã bấm Auto trong tab này;
   // mở panel lần đầu không tự bắt đầu.
   const resumed = restoreRunProgress();
