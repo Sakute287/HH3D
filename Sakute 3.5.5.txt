@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.4
+// @version      3.5.5
 // @description  Nhận diện chủ phòng bằng huy hiệu vương miện trong trận; panel giữ trạng thái khi Auto chạy
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
