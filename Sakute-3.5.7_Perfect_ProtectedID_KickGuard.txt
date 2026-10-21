@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.7-protected-id-kick-guard
-// @description  3.5.7: sửa nhận diện ID được bảo vệ trong hàng thành viên và chặn mọi luồng trục xuất
+// @version      3.5.8
+// @description  Invitation sending
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
