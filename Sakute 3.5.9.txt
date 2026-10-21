@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.9
-// @description  Ác mộng: gg khi hẹo
+// @version      3.5.4
+// @description  Nhận diện chủ phòng bằng huy hiệu vương miện trong trận; panel giữ trạng thái khi Auto chạy
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -27,8 +27,6 @@
   const ROOM_SETTINGS_KEY = 'hh3d_maze_config_v2';
   const RUN_PROGRESS_KEY = 'hh3d_maze_run_progress_v1';
   const INVITE_SENT_KEY = 'hh3d_maze_invite_last_event_v1';
-  const ROOM_REFRESH_LOCK_KEY = 'hh3d_maze_invite_room_refresh_last_v1';
-  const ROOM_REFRESH_COOLDOWN_MS = 30 * 60 * 1000;
   const INVITE_EVENT_COOLDOWN_MS = 8000;
   const INVITE_REMINDER_INTERVAL_MS = 10 * 60 * 1000;
   let lastInviteRosterFingerprint = '';
@@ -564,72 +562,10 @@
     click(button, 'Perfect: trục xuất thành viên vị trí 5 sau 5 rương giai đoạn 3');
     setStatus('Đã yêu cầu trục xuất vị trí 5; chờ xác nhận hoặc cập nhật phòng.'); saveRunProgress(); return true;
   }
-  function controlLabel(el) {
-    return norm(`${el?.innerText || ''} ${el?.getAttribute('title') || ''} ${el?.getAttribute('aria-label') || ''} ${el?.getAttribute('data-tooltip') || ''}`);
-  }
   function findInviteCopyButton() {
     return $$('button,a,[role="button"],[title],[aria-label]').find(el => isVisibleRoomElement(el) && !panel.contains(el) &&
-      /sao chép link mời|sao chep link moi|copy invite|invite link|lấy lời mời|lay loi moi/i.test(controlLabel(el)));
-  }
-  function findRoomToggleButton() {
-    const invite = findInviteCopyButton();
-    if (!invite) return null;
-    const ir = invite.getBoundingClientRect();
-    // Chỉ xét điều khiển nằm bên trái và gần cùng hàng với nút lấy lời mời.
-    const nearby = $$('button,a,[role="button"],[title],[aria-label]')
-      .filter(el => isVisibleRoomElement(el) && !panel.contains(el) && el !== invite)
-      .map(el => ({ el, r: el.getBoundingClientRect(), label: controlLabel(el) }))
-      .filter(x => x.r.right <= ir.left + 8 && Math.abs(x.r.top - ir.top) < 55)
-      .sort((a, b) => (ir.left - a.r.right) - (ir.left - b.r.right));
-    const explicit = nearby.find(x => /mở khóa|mo khoa|mở phòng|mo phong|unlock room|open room|khóa phòng|khoa phong|đóng phòng|dong phong|lock room/.test(x.label));
-    if (explicit) return explicit.el;
-    return nearby[0]?.el || null;
-  }
-  function roomToggleState(button) {
-    const label = controlLabel(button);
-    // Nhãn mở khóa/mở phòng nghĩa là phòng hiện đang khóa.
-    if (/mở khóa|mo khoa|mở phòng|mo phong|unlock room|open room/.test(label)) return 'locked';
-    // Nhãn khóa phòng/đóng phòng nghĩa là phòng hiện đang mở.
-    if (/khóa phòng|khoa phong|đóng phòng|dong phong|lock room/.test(label)) return 'open';
-    return 'unknown';
-  }
-  async function refreshInviteByRoomToggleIfAllowed() {
-    let toggle = findRoomToggleButton();
-    if (!toggle) {
-      log('Không tìm thấy nút trạng thái phòng bên trái nút lấy lời mời; không bấm nút nào để tránh nhầm lẫn.', 'warn');
-      return false;
-    }
-    const initialState = roomToggleState(toggle);
-    if (initialState === 'open') {
-      log('Phòng đang mở (nút hiển thị Khóa phòng); giữ nguyên trạng thái, không khóa/mở lại và lấy lời mời hiện tại.', 'info');
-      return false;
-    }
-    if (initialState !== 'locked') {
-      log('Không xác định chắc chắn phòng đang mở hay khóa từ nhãn nút; bỏ qua thao tác làm mới để tránh nhầm lẫn.', 'warn');
-      return false;
-    }
-    let last = 0; try { last = Number(localStorage.getItem(ROOM_REFRESH_LOCK_KEY)) || 0; } catch (_) {}
-    if (Date.now() - last < ROOM_REFRESH_COOLDOWN_MS) {
-      log('Phòng đang khóa nhưng lần mở/khóa gần nhất chưa đủ 30 phút; lấy lời mời hiện tại mà không thay đổi trạng thái phòng.', 'info');
-      return false;
-    }
-    click(toggle, 'Làm mới lời mời: phòng đang khóa — mở khóa phòng');
-    await sleep(700);
-    toggle = findRoomToggleButton();
-    if (!toggle || roomToggleState(toggle) !== 'open') {
-      log('Đã yêu cầu mở khóa phòng nhưng trạng thái nút không chuyển sang Khóa phòng; không bấm thêm nút để tránh thao tác nhầm.', 'warn');
-      return false;
-    }
-    click(toggle, 'Làm mới lời mời: khóa lại phòng sau khi mở khóa');
-    await sleep(700);
-    const finalToggle = findRoomToggleButton();
-    if (!finalToggle || roomToggleState(finalToggle) !== 'locked') {
-      log('Đã yêu cầu khóa lại nhưng không thể xác nhận trạng thái phòng; kiểm tra phòng thủ công.', 'warn');
-      return false;
-    }
-    try { localStorage.setItem(ROOM_REFRESH_LOCK_KEY, String(Date.now())); } catch (_) {}
-    log('Phòng ban đầu đang khóa: đã mở khóa rồi khóa lại để làm mới lời mời.', 'good');
-    return true;
+      /sao chép link mời|sao chep link moi|copy invite|invite link/i.test(
+        `${el.innerText || ''} ${el.getAttribute('title') || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('data-tooltip') || ''}`));
   }
   function findRestNonceInDocument(doc = document) {
     const candidates = [window.wpApiSettings?.nonce, window._wpnonce, window.wp_rest_nonce,
@@ -664,10 +600,10 @@
     let data = null; try { data = await response.json(); } catch (_) {}
     if (!response.ok || data?.result === false) throw new Error(`API gửi tin nhắn HTTP ${response.status}${data?.message ? `: ${data.message}` : ''}`);
   }
-  async function maybeSendInviteMessage(forceForRosterChange = false, initialAfterAuto = false, refreshRoomForRosterChange = false) {
-    // Gửi lời mời trong Perfect khi Auto đang chạy, là chủ phòng và phòng chưa đủ 5 người.
-    // Lần Auto đầu tiên chỉ lấy/gửi lời mời hiện tại, tuyệt đối không làm mới bằng mở/khóa phòng.
-    // Chỉ khi phòng chưa đủ 5 người và có thay đổi thành viên mới được thử làm mới; nhắc lại mỗi 10 phút.
+  async function maybeSendInviteMessage(forceForRosterChange = false, initialAfterAuto = false) {
+    // Gửi đầy đủ lời mời kèm liên kết ở chế độ Perfect khi Auto đang chạy và người dùng là chủ phòng.
+    // Lần đầu gửi ngay sau khi bấm Auto; các lần nhắc tiếp theo cách nhau 10 phút
+    // khi phòng vẫn chưa đủ 5 người.
     if (!state.running || state.paused || state.mode !== 'full' || !isRoomHost()) return;
     // Chặn các lời gọi đồng thời (ví dụ Auto và tick sảnh chạy sát nhau).
     if (inviteSendInFlight) return;
@@ -688,15 +624,8 @@
     const onCopy = ev => { const text = ev.clipboardData?.getData('text/plain'); if (text) copiedText = text; };
     document.addEventListener('copy', onCopy, true);
     try {
-      // Làm mới chỉ áp dụng khi phòng chưa đủ 5 người, có thay đổi thành viên,
-      // và không phải lần gửi đầu tiên sau khi bấm Auto.
-      // Nếu phòng đủ 5 người hoặc đây là lần Auto đầu, tuyệt đối không mở/khóa phòng.
-      if (refreshRoomForRosterChange && !initialAfterAuto && players < 5) {
-        await refreshInviteByRoomToggleIfAllowed();
-      }
-      const refreshedButton = findInviteCopyButton() || button;
-      // Nút trong sảnh tạo/copy nguyên văn lời mời; bắt sự kiện copy và clipboard API.
-      refreshedButton.click();
+      // Nút trong sảnh thật sự tạo/copy link mời. Bắt cả sự kiện copy và clipboard API.
+      button.click();
       await sleep(250);
       if (!copiedText && navigator.clipboard?.readText) {
         try { copiedText = await navigator.clipboard.readText(); } catch (_) {}
@@ -989,8 +918,6 @@
       if (lastRoomFingerprint && fingerprint !== lastRoomFingerprint && !state.perfectKickIssued) {
         lastRoomFingerprint = fingerprint;
         resetPerfectForRosterChange();
-        // Chỉ sự kiện thành viên rời/bị trục xuất mới được phép làm mới lời mời bằng mở/khóa phòng.
-        void maybeSendInviteMessage(true, false, true);
         return;
       }
       lastRoomFingerprint = fingerprint;
@@ -1348,23 +1275,23 @@
     const activeDifficulty = currentDifficulty() || state.difficulty || '';
     const isNightmare = /ác mộng/i.test(activeDifficulty) || (state.mode === 'full' && state.perfectStage === 1);
     if (!isNightmare && !state.deadRetreatPending) return false;
-    if (!state.deadRetreatPending && isNightmare && deadCount > 3 && isCombat()) {
+    if (!state.deadRetreatPending && isNightmare && deadCount > 2 && isCombat()) {
       state.deadRetreatPending = true;
-      setStatus(`Có ${deadCount} người đã chết (>3) · tự đầu hàng để thử lại`);
+      setStatus(`Có ${deadCount} người đã chết (>2) · tự đầu hàng để thử lại`);
       log(`Phát hiện ${deadCount} người đã chết; đầu hàng và quay về phòng để thử lại.`, 'warn');
     }
     if (!state.deadRetreatPending) return false;
 
     const confirm = findClickable(/^xác nhận$/i);
     if (/xác nhận đầu hàng|xác nhận hành động/.test(t) && confirm) {
-      click(confirm, 'Xác nhận đầu hàng khi có từ 4 người chết trở lên');
+      click(confirm, 'Xác nhận đầu hàng khi có hơn 2 người chết');
       await sleep(400);
       return true;
     }
     if (/thất bại|đầu hàng thành công|đã đầu hàng|kết thúc lượt/.test(t)) {
       const back = findClickable(/quay về phòng|về phòng|quay về sảnh|về sảnh|trở về phòng|trở về sảnh|xác nhận|đồng ý/i);
       if (back) {
-        click(back, 'Quay về phòng sau khi đầu hàng do từ 4 người chết trở lên');
+        click(back, 'Quay về phòng sau khi đầu hàng do hơn 2 người chết');
         state.deadRetreatPending = false;
         state.retryAfter = Date.now() + 1000;
         await sleep(700);
@@ -1374,12 +1301,12 @@
     if (isCombat()) {
       const abandon = findClickable(/đầu hàng/i);
       if (abandon && !/xác nhận đầu hàng/.test(t)) {
-        click(abandon, 'Đầu hàng khi có từ 4 người chết trở lên');
+        click(abandon, 'Đầu hàng khi có hơn 2 người chết');
         await sleep(350);
         const after = getVisibleText().replace(norm(panel.innerText), '');
         if (/xác nhận đầu hàng|xác nhận hành động/.test(after)) {
           const yes = findClickable(/^xác nhận$/i);
-          if (yes) click(yes, 'Xác nhận đầu hàng khi có từ 4 người chết trở lên');
+          if (yes) click(yes, 'Xác nhận đầu hàng khi có hơn 2 người chết');
         }
         return true;
       }
