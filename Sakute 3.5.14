@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.11-perfect-refresh-invite-id-only
-// @description  3.5.11: làm mới phòng có điều kiện, gửi lời mời theo sự kiện và khóa ID bằng ID
+// @version      3.5.14-perfect-invite-stage-dots-fix
+// @description  3.5.14: sửa đếm chấm ải, gửi lời mời ổn định và nhắc mỗi 30 phút trong Perfect
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -102,7 +102,7 @@
     difficulty: '', stage: 0, lastAction: '', lastActionAt: 0,
     seenStage: '', startedAt: 0, log: [], stoppedReason: '',
     farmElements: [['Kim'], ['Mộc'], ['Thủy'], ['Hỏa'], ['Thổ']],
-    stageDone: new Set(), retryAfter: 0, lastStartAt: 0, lastCombatStage: 0, farmScanUntil: 0, farmScanStage: 0, perfectStage: 1, perfectRewardHandled: false, perfectAdvancePending: false, deadRetreatPending: false, lobbyWaitUntil: 0,
+    stageDone: new Set(), retryAfter: 0, lastStartAt: 0, lastCombatStage: 0, farmScanUntil: 0, farmScanStage: 0, perfectStage: 1, perfectStartStage: 1, perfectRewardHandled: false, perfectAdvancePending: false, deadRetreatPending: false, lobbyWaitUntil: 0,
     perfectStage3ChestCount: 0, perfectStopAfterReturn: false, perfectKickIssued: false, perfectKickPending: false
   };
   let lastRoomFingerprint = '';
@@ -118,7 +118,7 @@
         farmElements: state.farmElements, stageDone: [...state.stageDone],
         retryAfter: state.retryAfter, lastStartAt: state.lastStartAt,
         lastCombatStage: state.lastCombatStage, farmScanUntil: state.farmScanUntil,
-        farmScanStage: state.farmScanStage, perfectStage: state.perfectStage,
+        farmScanStage: state.farmScanStage, perfectStage: state.perfectStage, perfectStartStage: state.perfectStartStage,
         perfectRewardHandled: state.perfectRewardHandled,
         perfectAdvancePending: state.perfectAdvancePending,
         deadRetreatPending: state.deadRetreatPending, lobbyWaitUntil: state.lobbyWaitUntil,
@@ -155,6 +155,8 @@
       state.farmScanUntil = Number(saved.farmScanUntil) || 0;
       state.farmScanStage = Number(saved.farmScanStage) || 0;
       state.perfectStage = [1,2,3].includes(Number(saved.perfectStage)) ? Number(saved.perfectStage) : 1;
+      state.perfectStartStage = [1,2].includes(Number(saved.perfectStartStage)) ? Number(saved.perfectStartStage) : state.perfectStage === 2 ? 2 : 1;
+      const perfectStartSelect = $('#mc-perfect-start', panel); if (perfectStartSelect) perfectStartSelect.value = String(state.perfectStartStage);
       state.perfectRewardHandled = !!saved.perfectRewardHandled;
       state.perfectAdvancePending = !!saved.perfectAdvancePending;
       state.deadRetreatPending = !!saved.deadRetreatPending;
@@ -708,7 +710,8 @@
     return count ? `count:${count}` : '';
   }
   function resetPerfectForRosterChange() {
-    const selectedStart = clampInt($('#mc-perfect-start', panel)?.value, 1, 2, 1);
+    const selectedStart = clampInt($('#mc-perfect-start', panel)?.value, 1, 2, [1,2].includes(Number(state.perfectStartStage)) ? Number(state.perfectStartStage) : 1);
+    state.perfectStartStage = selectedStart;
     state.perfectStage = selectedStart; state.difficulty = selectedStart === 1 ? 'Ác Mộng' : 'Khó'; state.stage = 0;
     state.stageDone.clear(); state.lastCombatStage = 0;
     state.perfectRewardHandled = false; state.perfectAdvancePending = false;
@@ -792,7 +795,7 @@
     const players = roomPlayerCount();
     if (players >= 5 || players <= 0) return;
     let lastSent = 0; try { lastSent = Number(localStorage.getItem(INVITE_SENT_KEY)) || 0; } catch (_) {}
-    if (!initialAfterAuto && !afterLock && forceForRosterChange && Date.now() - lastSent < INVITE_EVENT_COOLDOWN_MS) return;
+    if (!initialAfterAuto && !afterLock && forceForRosterChange && Date.now() - lastSent < INVITE_EVENT_COOLDOWN_MS && Date.now() - (state.startedAt || Date.now()) < ROOM_RELOCK_INTERVAL_MS) return;
     inviteSendInFlight = true;
     try {
       // Phòng khóa thì làm mới trước; phòng đang mở thì chỉ lấy/gửi lời mời.
@@ -803,13 +806,17 @@
       const onCopy = ev => { const text = ev.clipboardData?.getData('text/plain'); if (text) copiedText = text; };
       document.addEventListener('copy', onCopy, true);
       try {
-        button.click();
-        await sleep(250);
-        if (!copiedText && navigator.clipboard?.readText) {
-          try { copiedText = await navigator.clipboard.readText(); } catch (_) {}
+        // Một số lần nút copy cập nhật clipboard chậm; thử lại tối đa 3 lần.
+        for (let attempt = 0; attempt < 3 && !copiedText; attempt++) {
+          button.click();
+          await sleep(350 + attempt * 250);
+          if (!copiedText && navigator.clipboard?.readText) {
+            try { copiedText = await navigator.clipboard.readText(); } catch (_) {}
+          }
         }
       } finally { document.removeEventListener('copy', onCopy, true); }
-      if (!copiedText) { log('Không đọc được nội dung lời mời mới từ clipboard; chưa gửi để tránh gửi sai.', 'warn'); return; }
+      copiedText = String(copiedText || '').trim();
+      if (!copiedText) { log('Không đọc được lời mời mới sau 3 lần thử; chưa gửi để tránh gửi sai.', 'warn'); return; }
       await sendInviteMessage(copiedText);
       const sentAt = Date.now();
       localStorage.setItem(INVITE_SENT_KEY, String(sentAt));
@@ -854,29 +861,36 @@
     return '';
   }
   function currentStage() {
-    // Chỉ đọc số ải khi chắc chắn đang ở trong trận.
-    // Ở sảnh, dạng "?/5" là số người trong phòng, KHÔNG phải số ải.
+    // Chỉ đếm 5 chấm tiến trình ở hàng trên cùng bên trái trong trận.
+    // Giới hạn vùng rất hẹp và gom theo tọa độ X để tránh đếm lặp nhiều phần tử DOM
+    // hoặc các biểu tượng màu khác trong giao diện.
     if (!isCombat()) return 0;
-    const raw = (document.body?.innerText || '').replace(panel.innerText, '');
-    const t = norm(raw);
-    // Theo yêu cầu: số ải chỉ lấy bằng cách đếm vòng tròn sáng, không đọc chữ "Ải ?/5".
-    // Chỉ xét phần tử nhỏ, gần góc trên-trái và có hình tròn để tránh đếm UI khác.
-    const circles = $$('body *').filter(el => {
-      if (!isVisibleRoomElement(el) || el.children.length > 0) return false;
+    const dots = [];
+    for (const el of $$('body *')) {
+      if (!isVisibleRoomElement(el) || el.children.length > 0) continue;
       const r = el.getBoundingClientRect();
-      if (r.left < 0 || r.top < 0 || r.left > 340 || r.top > 190) return false;
-      if (r.width < 7 || r.height < 7 || r.width > 36 || r.height > 36) return false;
+      if (r.left < 15 || r.left > 125 || r.top < 12 || r.top > 58) continue;
+      if (r.width < 7 || r.height < 7 || r.width > 22 || r.height > 22) continue;
+      if (Math.abs(r.width - r.height) > 5) continue;
       const cs = getComputedStyle(el);
       const radius = parseFloat(cs.borderTopLeftRadius) || 0;
-      if (radius < Math.min(r.width, r.height) * 0.3) return false;
-      const color = cs.backgroundColor;
-      const nums = color.match(/[\d.]+/g)?.map(Number) || [];
-      const bright = nums.length >= 3 && Math.max(...nums.slice(0, 3)) >= 175 && (nums[3] === undefined || nums[3] > 0.15);
-      const cls = norm(`${el.className?.baseVal || el.className || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''}`);
-      return bright || /active|current|light|bright|sáng|sang|active-stage/.test(cls);
-    });
-    if (circles.length) return Math.min(5, circles.length);
-    return 0;
+      if (radius < Math.min(r.width, r.height) * 0.3) continue;
+      const colorStrings = [cs.backgroundColor, cs.borderTopColor, cs.borderRightColor, cs.borderBottomColor, cs.borderLeftColor];
+      let colored = false;
+      for (const color of colorStrings) {
+        const nums = String(color).match(/[\d.]+/g)?.map(Number) || [];
+        if (nums.length < 3 || (nums[3] !== undefined && nums[3] <= 0.15)) continue;
+        const [rr, gg, bb] = nums;
+        // Vòng sáng của ải: vàng/cyan; loại nền tím tối/viền chưa sáng.
+        if ((rr >= 155 && gg >= 115 && bb <= 150 && rr - bb >= 45) ||
+            (gg >= 135 && bb >= 135 && gg - rr >= 25 && bb - rr >= 20)) { colored = true; break; }
+      }
+      if (!colored) continue;
+      const x = Math.round(r.left + r.width / 2);
+      if (!dots.some(d => Math.abs(d.x - x) <= 4)) dots.push({x});
+    }
+    dots.sort((a,b) => a.x - b.x);
+    return Math.min(5, dots.length);
   }
   function currentBossElement() {
     // Đọc hệ boss theo nhiều kiểu nhãn, không phụ thuộc đúng một chuỗi
@@ -1077,7 +1091,8 @@
       if (state.perfectKickIssued && !hasConfirmation()) {
         const countAfterKick = roomPlayerCount();
         if (countAfterKick > 0 && countAfterKick < 5) {
-          const selectedStart = clampInt($('#mc-perfect-start', panel)?.value, 1, 2, 1);
+          const selectedStart = clampInt($('#mc-perfect-start', panel)?.value, 1, 2, [1,2].includes(Number(state.perfectStartStage)) ? Number(state.perfectStartStage) : 1);
+          state.perfectStartStage = selectedStart;
           state.perfectStage = selectedStart;
           state.difficulty = selectedStart === 1 ? 'Ác Mộng' : 'Khó';
           state.stage = 0; state.stageDone.clear(); state.lastCombatStage = 0;
@@ -1558,7 +1573,8 @@
     state.mode = ui.mode.value;
     state.farmElements = $$('.mc-stage-elements[data-stage]', panel).map(box => { const chosen = $$('input[data-element]:checked', box).map(el => el.dataset.element); return chosen.length ? chosen : ['Kim']; });
     state.running = true; state.paused = false; state.busy = false;
-    state.perfectStage = state.mode === 'full' ? clampInt($('#mc-perfect-start', panel)?.value, 1, 2, 1) : 1;
+    state.perfectStartStage = state.mode === 'full' ? clampInt($('#mc-perfect-start', panel)?.value, 1, 2, 1) : 1;
+    state.perfectStage = state.perfectStartStage;
     state.perfectStage3ChestCount = 0; state.perfectStopAfterReturn = false; state.perfectKickIssued = false; state.perfectKickPending = false;
     state.perfectRewardHandled = false; state.perfectAdvancePending = false; state.deadRetreatPending = false;
     state.difficulty = state.mode === 'full' ? (state.perfectStage === 2 ? 'Khó' : 'Ác Mộng') : state.mode === 'grass' ? 'Khó' : (currentDifficulty() || '');
@@ -1580,7 +1596,7 @@
     state.farmScanUntil = 0;
     state.farmScanStage = 0;
     state.lastStartAt = 0;
-    state.perfectStage = 1;
+    state.perfectStage = 1; state.perfectStartStage = 1;
     state.perfectRewardHandled = false; state.perfectAdvancePending = false; state.deadRetreatPending = false;
     state.perfectStage3ChestCount = 0; state.perfectStopAfterReturn = false; state.perfectKickIssued = false; state.perfectKickPending = false;
     state.retryAfter = 0;
