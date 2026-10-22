@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.14-perfect-invite-stage-dots-fix
-// @description  3.5.14: sửa đếm chấm ải, gửi lời mời ổn định và nhắc mỗi 30 phút trong Perfect
+// @version      3.5.18-panel-overlay-independent
+// @description  3.5.18: Auto chạy độc lập khi panel mở hoặc thu gọn
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -251,7 +251,7 @@
 
   const style = document.createElement('style');
   style.textContent = `
-    #hh3d-mc-auto-panel{position:fixed;z-index:2147483646;right:16px;top:90px;width:330px;max-height:82vh;overflow:auto;background:#100c22;color:#eee8ff;border:1px solid #7944bd;border-radius:14px;box-shadow:0 10px 40px #0009;font:13px/1.45 system-ui,sans-serif}
+    #hh3d-mc-auto-panel{position:fixed;z-index:2147483646;right:16px;top:90px;width:330px;max-height:82vh;overflow:auto;background:#100c22;color:#eee8ff;border:1px solid #7944bd;border-radius:14px;box-shadow:0 10px 40px #0009;font:13px/1.45 system-ui,sans-serif;pointer-events:none} #hh3d-mc-auto-panel *{pointer-events:auto}
     #hh3d-mc-auto-panel *{box-sizing:border-box} #hh3d-mc-auto-panel .mc-head{display:flex;align-items:center;justify-content:space-between;padding:11px 13px;background:#24113c;border-radius:13px 13px 0 0;font-size:15px}
     #hh3d-mc-auto-panel button,#hh3d-mc-auto-panel select{font:inherit;color:inherit;background:#211735;border:1px solid #61418e;border-radius:8px;padding:7px 9px}
     #hh3d-mc-auto-panel button{cursor:pointer} #hh3d-mc-auto-panel button:hover{filter:brightness(1.2)}
@@ -861,36 +861,68 @@
     return '';
   }
   function currentStage() {
-    // Chỉ đếm 5 chấm tiến trình ở hàng trên cùng bên trái trong trận.
-    // Giới hạn vùng rất hẹp và gom theo tọa độ X để tránh đếm lặp nhiều phần tử DOM
-    // hoặc các biểu tượng màu khác trong giao diện.
     if (!isCombat()) return 0;
+
+    // Ưu tiên số ải hiển thị trực tiếp trong nhãn "Ải X/5".
+    // Loại panel của tool để không đọc nhầm trạng thái nội bộ.
+    const textNodes = $$('body *')
+      .filter(el => el !== panel && !panel.contains(el) && isVisibleRoomElement(el))
+      .filter(el => el.children.length === 0 || (el.children.length <= 2 && (el.innerText || '').length < 40))
+      .map(el => ({ el, txt: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim() }))
+      .filter(x => x.txt);
+    for (const item of textNodes) {
+      const m = item.txt.match(/(?:^|[^\p{L}])ải\s*([1-5])\s*\/\s*5(?:$|[^0-9])/iu);
+      if (m) return Number(m[1]);
+    }
+
+    // Không có nhãn "Ải X/5": đếm các vòng tròn màu liền kề ở góc trên trái.
+    // Không xét phần tử chứa chữ; chỉ nhận phần tử nhỏ, gần tròn và có màu sáng.
     const dots = [];
     for (const el of $$('body *')) {
-      if (!isVisibleRoomElement(el) || el.children.length > 0) continue;
+      if (el === panel || panel.contains(el) || !isVisibleRoomElement(el) || el.children.length > 0) continue;
+      const txt = (el.innerText || el.textContent || '').trim();
+      if (txt) continue;
       const r = el.getBoundingClientRect();
-      if (r.left < 15 || r.left > 125 || r.top < 12 || r.top > 58) continue;
+      if (r.left < 12 || r.left > 125 || r.top < 8 || r.top > 62) continue;
       if (r.width < 7 || r.height < 7 || r.width > 22 || r.height > 22) continue;
       if (Math.abs(r.width - r.height) > 5) continue;
       const cs = getComputedStyle(el);
       const radius = parseFloat(cs.borderTopLeftRadius) || 0;
       if (radius < Math.min(r.width, r.height) * 0.3) continue;
-      const colorStrings = [cs.backgroundColor, cs.borderTopColor, cs.borderRightColor, cs.borderBottomColor, cs.borderLeftColor];
+      const colors = [cs.backgroundColor, cs.borderTopColor, cs.borderRightColor, cs.borderBottomColor, cs.borderLeftColor];
       let colored = false;
-      for (const color of colorStrings) {
+      for (const color of colors) {
         const nums = String(color).match(/[\d.]+/g)?.map(Number) || [];
         if (nums.length < 3 || (nums[3] !== undefined && nums[3] <= 0.15)) continue;
         const [rr, gg, bb] = nums;
-        // Vòng sáng của ải: vàng/cyan; loại nền tím tối/viền chưa sáng.
-        if ((rr >= 155 && gg >= 115 && bb <= 150 && rr - bb >= 45) ||
-            (gg >= 135 && bb >= 135 && gg - rr >= 25 && bb - rr >= 20)) { colored = true; break; }
+        // Vàng sáng hoặc xanh/cyan sáng; bỏ tím tối và vòng chỉ có viền.
+        if ((rr >= 155 && gg >= 105 && bb <= 155 && rr - bb >= 35) ||
+            (gg >= 125 && bb >= 125 && gg - rr >= 20 && bb - rr >= 15)) {
+          colored = true; break;
+        }
       }
       if (!colored) continue;
       const x = Math.round(r.left + r.width / 2);
-      if (!dots.some(d => Math.abs(d.x - x) <= 4)) dots.push({x});
+      const y = Math.round(r.top + r.height / 2);
+      if (!dots.some(d => Math.abs(d.x - x) <= 4 && Math.abs(d.y - y) <= 4)) dots.push({x, y});
     }
+    if (!dots.length) return 0;
     dots.sort((a,b) => a.x - b.x);
-    return Math.min(5, dots.length);
+    // Chỉ đếm dãy liền kề trên cùng một hàng, tránh lấy các chấm ở nơi khác.
+    const rows = [];
+    for (const dot of dots) {
+      let row = rows.find(row => Math.abs(row.y - dot.y) <= 6);
+      if (!row) { row = {y: dot.y, dots: []}; rows.push(row); }
+      row.dots.push(dot);
+    }
+    rows.sort((a,b) => b.dots.length - a.dots.length);
+    const row = rows[0];
+    row.dots.sort((a,b) => a.x - b.x);
+    const adjacent = [];
+    for (const dot of row.dots) {
+      if (!adjacent.length || dot.x - adjacent[adjacent.length - 1].x <= 28) adjacent.push(dot);
+    }
+    return Math.min(5, adjacent.length);
   }
   function currentBossElement() {
     // Đọc hệ boss theo nhiều kiểu nhãn, không phụ thuộc đúng một chuỗi
@@ -906,14 +938,23 @@
     ];
 
     const patterns = [
-      /ngũ hành\s*boss\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)\b/i,
-      /boss\s*(?:ngũ hành|hệ)?\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)\b/i,
-      /(?:hệ|ngũ hành)\s*(?:của\s*)?boss\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)\b/i,
-      /(?:thuộc|hệ)\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)\s*(?:hành)?\s*boss\b/i
+      /ngũ hành\s*boss\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)(?:$|[^\p{L}])/iu,
+      /boss\s*(?:ngũ hành|hệ)?\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)(?:$|[^\p{L}])/iu,
+      /(?:hệ|ngũ hành)\s*(?:của\s*)?boss\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)(?:$|[^\p{L}])/iu,
+      /(?:thuộc|hệ)\s*[:：\-]?\s*(kim|mộc|thủy|hỏa|thổ)\s*(?:hành)?\s*boss(?:$|[^\p{L}])/iu
     ];
     for (const re of patterns) {
       const m = outside.match(re);
       if (m) return m[1][0].toUpperCase() + m[1].slice(1);
+    }
+    // Fallback cho giao diện tách nhãn và giá trị thành các dòng kế tiếp.
+    const lines = outside.split(/[\n\r]+/).map(x => x.trim()).filter(Boolean);
+    for (let i = 0; i < lines.length; i++) {
+      if (/(?:ngũ hành\s*boss|boss(?:\s+ngũ hành)?|hệ\s*boss|thuộc tính boss)/i.test(lines[i])) {
+        const joined = `${lines[i]} ${lines[i + 1] || ''}`;
+        const m = joined.match(/(?:^|[^\p{L}])(kim|mộc|thủy|hỏa|thổ)(?:$|[^\p{L}])/iu);
+        if (m) return m[1][0].toUpperCase() + m[1].slice(1);
+      }
     }
 
     // Một số giao diện tách nhãn và giá trị thành các phần tử DOM riêng.
@@ -1654,7 +1695,12 @@
     ui.elements.style.display = ui.mode.value === 'grass' ? 'block' : 'none';
     $('#mc-perfect-start-wrap', panel).style.display = ui.mode.value === 'full' ? 'block' : 'none';
   });
-  $('#mc-min', panel).addEventListener('click', () => {
+  // Thu gọn/mở rộng chỉ thay đổi giao diện; không được phát sinh sự kiện tới game
+  // hoặc thay đổi state.running/state.paused/tiến trình hiện tại.
+  panel.addEventListener('click', ev => { ev.stopPropagation(); });
+  $('#mc-min', panel).addEventListener('click', ev => {
+    ev.preventDefault();
+    ev.stopPropagation();
     panel.classList.toggle('mc-collapsed');
     $('#mc-min', panel).textContent = panel.classList.contains('mc-collapsed') ? '+' : '−';
   });
@@ -1669,13 +1715,19 @@
   panel.classList.add('mc-collapsed');
   // Vòng lặp tự động chạy độc lập với trạng thái thu gọn/mở rộng của panel.
   setInterval(() => {
-    if (checkExpiredSession()) return;
-    updatePanelVisibility();
-    keepGameSettingsEnabled();
-    if (state.running && !state.paused) { tick(); saveRunProgress(); }
-    if (state.startedAt && state.running) {
-      const sec = Math.floor((Date.now() - state.startedAt) / 1000);
-      ui.time.textContent = `${String(Math.floor(sec/60)).padStart(2,'0')}:${String(sec%60).padStart(2,'0')}`;
-    }
+    try {
+      if (checkExpiredSession()) return;
+      try { updatePanelVisibility(); } catch (e) { console.warn('[Sakute] panel visibility:', e); }
+      try { keepGameSettingsEnabled(); } catch (e) { console.warn('[Sakute] game settings:', e); }
+      // Auto tick is deliberately independent of panel open/collapsed layout.
+      if (state.running && !state.paused) {
+        Promise.resolve(tick()).catch(e => { console.error('[Sakute] tick error:', e); log(`Lỗi vòng Auto: ${e?.message || e}`, 'warn'); });
+        saveRunProgress();
+      }
+      if (state.startedAt && state.running) {
+        const sec = Math.floor((Date.now() - state.startedAt) / 1000);
+        ui.time.textContent = `${String(Math.floor(sec/60)).padStart(2,'0')}:${String(sec%60).padStart(2,'0')}`;
+      }
+    } catch (e) { console.error('[Sakute] auto loop error:', e); }
   }, 1200);
 })();
