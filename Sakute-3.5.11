@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Sakute
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.10-perfect-event-only-invites
-// @description  3.5.10: chỉ gửi lời mời khi Auto, sau khóa phòng 2 giây hoặc khi có người rời phòng; bỏ nhắc định kỳ
+// @version      3.5.11-perfect-refresh-invite-id-only
+// @description  3.5.11: làm mới phòng có điều kiện, gửi lời mời theo sự kiện và khóa ID bằng ID
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -65,8 +65,8 @@
   const INVITE_SENT_KEY = 'hh3d_maze_invite_last_event_v1';
   const INVITE_EVENT_COOLDOWN_MS = 8000;
   const ROOM_RELOCK_INTERVAL_MS = 30 * 60 * 1000;
-  const INVITE_AFTER_LOCK_DELAY_MS = 2000;
-  let lastRoomRelockAt = 0;
+  let underfilledLobbySince = 0;
+  let lastUnderfilledInviteAt = 0;
   let lastInviteRosterFingerprint = '';
   let inviteSendInFlight = false;
   const CHAT_THREAD_ID = 22239;
@@ -217,7 +217,7 @@
             <input id="mc-kick-delay" type="number" min="1" max="60" value="5">
           </label>
           <div class="mc-protect-id">
-            <label>Tên hoặc ID người chơi <input id="mc-protect-value-input" type="text" placeholder="Nhập tên hoặc user_id"></label>
+            <label>ID người chơi <input id="mc-protect-value-input" type="text" inputmode="numeric" placeholder="Nhập user_id"></label>
             <button id="mc-protect-add" type="button">+ Tìm và khóa</button>
             <div id="mc-protected-list"></div>
             <p class="mc-note">ID được bảo vệ sẽ không bị trục xuất do chưa sẵn sàng. Danh sách lưu qua lần tải lại trang.</p>
@@ -384,7 +384,7 @@
   initRoomSettingsUI();
   function renderProtectedPlayers() {
     const list = $('#mc-protected-list', panel); if (!list) return;
-    list.innerHTML = protectedPlayers.map(p => `<div class="mc-protected-item"><span>${escapeHtml(p.name || 'Người chơi')} · ID ${escapeHtml(p.id)}</span><button type="button" data-unprotect-id="${escapeHtml(p.id)}">Gỡ</button></div>`).join('') || '<p class="mc-note">Chưa có ID được bảo vệ.</p>';
+    list.innerHTML = protectedPlayers.map(p => `<div class="mc-protected-item"><span>${escapeHtml(p.id)}: ${escapeHtml(p.name || 'Chưa rõ tên')}</span><button type="button" data-unprotect-id="${escapeHtml(p.id)}">Gỡ</button></div>`).join('') || '<p class="mc-note">Chưa có ID được bảo vệ.</p>';
   }
   // Cache the actual user-status response used by the page. Re-fetching its URL as a
   // plain GET can lose the nonce/headers used by the original request and return 401.
@@ -444,53 +444,37 @@
     }
   } catch (_) {}
   async function findPlayerForProtection(query) {
-    const rows = [...new Set(ROOM_PLAYER_SELECTORS.flatMap(sel => $$(sel)))];
-    if (/^\d+$/.test(query)) {
-      const rowMatch = rows.map(row => rowPlayerIdentity(row)).find(p => p.id === query);
-      const apiMatch = cachedUserStatusMembers.find(p => p.id === query);
-      return { id: query, name: rowMatch?.name || apiMatch?.name || '' };
-    }
-    const wanted = norm(query);
-    let candidates = [];
-    for (const row of rows.filter(isVisibleRoomElement)) {
-      const identity = rowPlayerIdentity(row);
-      if (norm(identity.name) === wanted && identity.id) candidates.push(identity);
-    }
-    candidates.push(...cachedUserStatusMembers.filter(p => norm(p.name) === wanted));
-
-    // Try a same-origin GET with WordPress' exposed REST nonce when available.
-    // If it is rejected, keep using the captured response from the real page request.
-    if (!candidates.length) {
-      const url = new URL('/wp-json/me-cung/v1/user-status', location.origin).href;
-      const nonce = window.wpApiSettings?.nonce || window.wpApiSettings?.nonceToken ||
-        document.querySelector('meta[name="wp-api-nonce"]')?.content || '';
+    if (!/^\d+$/.test(query)) throw new Error('Chỉ nhập ID dạng số.');
+    const rows = roomRows();
+    const rowMatch = rows.map(row => rowPlayerIdentity(row)).find(p => p.id === query);
+    let apiMatch = cachedUserStatusMembers.find(p => p.id === query);
+    if (!apiMatch && !rowMatch) {
+      const nonce = findRestNonceInDocument(document);
       try {
         const headers = { 'Accept': 'application/json' };
         if (nonce) headers['X-WP-Nonce'] = nonce;
-        const response = await fetch(url, { method: 'GET', credentials: 'same-origin', cache: 'no-store', headers });
+        const response = await fetch(new URL('/wp-json/me-cung/v1/user-status', location.origin).href,
+          { method: 'GET', credentials: 'same-origin', cache: 'no-store', headers });
         if (response.ok) {
           cacheUserStatusPayload(await response.json());
-          candidates.push(...cachedUserStatusMembers.filter(p => norm(p.name) === wanted));
+          apiMatch = cachedUserStatusMembers.find(p => p.id === query);
         }
       } catch (_) {}
     }
-    const unique = [...new Map(candidates.map(p => [p.id, p])).values()];
-    if (unique.length > 1) throw new Error(`Có nhiều người trùng tên “${query}”. Hãy nhập ID để tránh khóa nhầm.`);
-    if (!unique.length) throw new Error(`Chưa tìm thấy “${query}” trong dữ liệu user-status đã tải. Hãy chờ danh sách người chơi cập nhật rồi thử lại, hoặc nhập user_id trực tiếp.`);
-    return unique[0];
+    return { id: query, name: rowMatch?.name || apiMatch?.name || '' };
   }
   $('#mc-protect-add', panel).addEventListener('click', async () => {
     const input = $('#mc-protect-value-input', panel);
     const query = String(input.value || '').trim();
-    if (!query) { log('Hãy nhập tên hoặc ID người chơi.', 'warn'); return; }
+    if (!query) { log('Hãy nhập ID người chơi.', 'warn'); return; }
     const button = $('#mc-protect-add', panel);
     button.disabled = true;
     try {
       const player = await findPlayerForProtection(query);
       if (!/^\d+$/.test(player.id)) throw new Error('Không lấy được user_id hợp lệ; chưa thêm bảo vệ.');
-      if (!protectedPlayers.some(p => String(p.id) === player.id)) protectedPlayers.push({ id: player.id, name: player.name || (/^\d+$/.test(query) ? 'Người chơi' : query) });
+      if (!protectedPlayers.some(p => String(p.id) === player.id)) protectedPlayers.push({ id: player.id, name: player.name || 'Chưa rõ tên' });
       saveProtectedPlayers(); renderProtectedPlayers(); input.value = '';
-      log(`Đã tự tìm và bảo vệ ID ${player.id}${player.name ? ` (${player.name})` : ''}; sẽ bỏ qua khi trục xuất người chưa sẵn sàng.`, 'good');
+      log(`Đã khóa bảo vệ ${player.id}: ${player.name || 'Chưa rõ tên'}.`, 'good');
     } catch (err) { log(err?.message || 'Không thể tìm ID người chơi.', 'warn'); }
     finally { button.disabled = false; }
   });
@@ -786,46 +770,52 @@
     let data = null; try { data = await response.json(); } catch (_) {}
     if (!response.ok || data?.result === false) throw new Error(`API gửi tin nhắn HTTP ${response.status}${data?.message ? `: ${data.message}` : ''}`);
   }
+  function isRoomLocked() {
+    // Khi phòng đang khóa, nút hiện là "Mở Khóa"; khi đang mở, nút hiện "Khóa Phòng".
+    return !!findClickable(/^mở khóa phòng$|^mở khóa$/i);
+  }
+  async function refreshRoomIfLocked() {
+    if (!isRoomLocked()) return false;
+    const unlock = findClickable(/^mở khóa phòng$|^mở khóa$/i);
+    if (!unlock) return false;
+    click(unlock, 'Mở khóa phòng để làm mới');
+    await sleep(500);
+    const lock = findClickable(/^khóa phòng$/i);
+    if (!lock) { log('Đã mở khóa nhưng không tìm thấy nút Khóa Phòng; chưa gửi lời mời mới.', 'warn'); return false; }
+    click(lock, 'Khóa lại phòng sau 0,5 giây');
+    await sleep(1000);
+    return true;
+  }
   async function maybeSendInviteMessage(forceForRosterChange = false, initialAfterAuto = false, afterLock = false) {
-    // Gửi đầy đủ lời mời kèm liên kết ở chế độ Perfect khi Auto đang chạy và người dùng là chủ phòng.
-    // Chỉ gửi theo ba sự kiện: Auto lần đầu, sau khóa phòng 2 giây, hoặc khi có người rời phòng.
-    // Mỗi lần đều bấm nút tạo/copy để lấy nội dung lời mời mới, không tái sử dụng clipboard cũ.
     if (!state.running || state.paused || state.mode !== 'full' || !isRoomHost()) return;
-    // Chặn các lời gọi đồng thời (ví dụ Auto và tick sảnh chạy sát nhau).
     if (inviteSendInFlight) return;
     const players = roomPlayerCount();
     if (players >= 5 || players <= 0) return;
     let lastSent = 0; try { lastSent = Number(localStorage.getItem(INVITE_SENT_KEY)) || 0; } catch (_) {}
-    const elapsed = Date.now() - lastSent;
-    if (initialAfterAuto) {
-      // Gửi ngay khi bấm Auto, không phụ thuộc lần gửi trước.
-    } else if (forceForRosterChange && !afterLock) {
-      // Sự kiện người rời phòng; chống gửi trùng nếu cùng một thay đổi bị phát hiện nhiều lần.
-      if (elapsed < INVITE_EVENT_COOLDOWN_MS) return;
-    } else if (!afterLock) {
-      // Không có nhắc định kỳ: chỉ các sự kiện được yêu cầu mới được phép gửi.
-      return;
-    }
-    const button = findInviteCopyButton(); if (!button) return;
+    if (!initialAfterAuto && !afterLock && forceForRosterChange && Date.now() - lastSent < INVITE_EVENT_COOLDOWN_MS) return;
     inviteSendInFlight = true;
-    let copiedText = '';
-    const onCopy = ev => { const text = ev.clipboardData?.getData('text/plain'); if (text) copiedText = text; };
-    document.addEventListener('copy', onCopy, true);
     try {
-      // Nút trong sảnh thật sự tạo/copy link mời. Bắt cả sự kiện copy và clipboard API.
-      button.click();
-      await sleep(250);
-      if (!copiedText && navigator.clipboard?.readText) {
-        try { copiedText = await navigator.clipboard.readText(); } catch (_) {}
-      }
-      if (!copiedText) { log('Đã nhấn nút Sao chép link mời nhưng không đọc được nguyên văn nội dung clipboard; chưa gửi tin để tránh tự tạo hoặc làm thay đổi lời mời.', 'warn'); return; }
+      // Phòng khóa thì làm mới trước; phòng đang mở thì chỉ lấy/gửi lời mời.
+      const refreshed = await refreshRoomIfLocked();
+      const button = findInviteCopyButton();
+      if (!button) { log('Không tìm thấy nút lấy lời mời ở sảnh.', 'warn'); return; }
+      let copiedText = '';
+      const onCopy = ev => { const text = ev.clipboardData?.getData('text/plain'); if (text) copiedText = text; };
+      document.addEventListener('copy', onCopy, true);
+      try {
+        button.click();
+        await sleep(250);
+        if (!copiedText && navigator.clipboard?.readText) {
+          try { copiedText = await navigator.clipboard.readText(); } catch (_) {}
+        }
+      } finally { document.removeEventListener('copy', onCopy, true); }
+      if (!copiedText) { log('Không đọc được nội dung lời mời mới từ clipboard; chưa gửi để tránh gửi sai.', 'warn'); return; }
       await sendInviteMessage(copiedText);
       const sentAt = Date.now();
       localStorage.setItem(INVITE_SENT_KEY, String(sentAt));
-      log(initialAfterAuto ? 'Đã lấy lời mời mới và gửi nguyên văn ngay sau Auto; không thay đổi trạng thái khóa phòng.' : afterLock ? 'Đã lấy lời mời mới và gửi nguyên văn sau khi khóa phòng 2 giây.' : 'Đã lấy lời mời mới và gửi nguyên văn sau khi phát hiện người rời phòng.', 'good');
-    } catch (e) {
-      log(`Chưa gửi được lời mời: ${e?.message || e}`, 'warn');
-    } finally { document.removeEventListener('copy', onCopy, true); inviteSendInFlight = false; }
+      log(refreshed ? 'Đã làm mới phòng, lấy lời mời mới và gửi nguyên văn.' : 'Phòng đang mở hoặc không cần làm mới; đã lấy lời mời và gửi nguyên văn.', 'good');
+    } catch (e) { log(`Chưa gửi được lời mời: ${e?.message || e}`, 'warn'); }
+    finally { inviteSendInFlight = false; }
   }
   function updatePanelVisibility() {
     const host = isRoomHost();
@@ -1058,36 +1048,17 @@
   }
 
   async function handleLobby() {
-    // Không đổi trạng thái phòng ở lần Auto đầu tiên. Sau đó chỉ mở lại khi đã qua
-    // ít nhất 30 phút kể từ lần khóa gần nhất; mở 0,5 giây rồi khóa lại.
-    if (state.running && state.mode === 'full' && lastRoomRelockAt > 0 && Date.now() - lastRoomRelockAt >= ROOM_RELOCK_INTERVAL_MS) {
-      const unlockButton = findClickable(/^mở khóa phòng$|^mở khóa$/i);
-      if (unlockButton) {
-        click(unlockButton, 'Mở khóa phòng theo chu kỳ 30 phút');
-        await sleep(500);
-        const relock = findClickable(/^khóa phòng$/i);
-        if (relock) {
-          click(relock, 'Khóa phòng sau khi mở 0,5 giây');
-          lastRoomRelockAt = Date.now();
-          log('Đã mở khóa 0,5 giây rồi khóa phòng; bắt đầu tính tối thiểu 30 phút đến lần mở khóa tiếp theo.', 'good');
-          await sleep(INVITE_AFTER_LOCK_DELAY_MS);
-          await maybeSendInviteMessage(true, false, true);
-          return;
-        }
-        // Nếu không thấy nút khóa sau khi mở, không giả lập thành công nem ghi nhận mốc.
-        log('Đã mở khóa phòng nhưng chưa tìm thấy nút Khóa Phòng; sẽ thử lại ở vòng sảnh sau.', 'warn');
+    const lobbyCountForInvite = roomPlayerCount();
+    if (state.running && state.mode === 'full' && lobbyCountForInvite > 0 && lobbyCountForInvite < 5) {
+      if (!underfilledLobbySince) { underfilledLobbySince = Date.now(); lastUnderfilledInviteAt = Date.now(); }
+      else if (Date.now() - underfilledLobbySince >= ROOM_RELOCK_INTERVAL_MS && Date.now() - lastUnderfilledInviteAt >= ROOM_RELOCK_INTERVAL_MS) {
+        lastUnderfilledInviteAt = Date.now();
+        await maybeSendInviteMessage(true, false, false);
         return;
       }
-      // Chỉ ghi nhận mốc nếu UI cho thấy không thể đổi trạng thái; tránh bấm liên tục.
-      const roomToggle = findClickable(/^khóa phòng$/i);
-      if (roomToggle) {
-        click(roomToggle, 'Khóa phòng theo chu kỳ 30 phút');
-        lastRoomRelockAt = Date.now();
-        log('Phòng đang mở; đã khóa lại theo chu kỳ 30 phút.', 'good');
-        await sleep(INVITE_AFTER_LOCK_DELAY_MS);
-        await maybeSendInviteMessage(true, false, true);
-        return;
-      }
+    } else {
+      underfilledLobbySince = 0;
+      lastUnderfilledInviteAt = 0;
     }
     // Giai đoạn Perfect đã được chốt ngay khi game xác nhận nhận rương; sảnh chỉ dùng để đổi độ khó/bắt đầu lượt kế.
     state.perfectAdvancePending = false;
@@ -1098,7 +1069,7 @@
     // Chỉ reset khi thực sự có tiến trình cần đặt lại để tránh reset lặp ở mỗi tick.
     if (mode === 'full') {
       const lobbyPlayers = roomPlayerCount();
-      if (lobbyPlayers > 0 && lobbyPlayers < 5 && state.perfectStage > 1 && !state.perfectStopAfterReturn && !state.perfectKickIssued) { resetPerfectForRosterChange(); return; }
+      if (lobbyPlayers > 0 && lobbyPlayers < 5 && state.perfectStage > 1 && !state.perfectStopAfterReturn && !state.perfectKickIssued) { resetPerfectForRosterChange(); void maybeSendInviteMessage(true, false); return; }
     }
     if (mode === 'full' && state.perfectStopAfterReturn) {
       if (!state.perfectKickIssued) { if (kickFifthRoomMember()) return; state.retryAfter = Date.now() + 2500; return; }
@@ -1594,8 +1565,7 @@
     state.startedAt = Date.now(); state.stageDone.clear(); state.lastStartAt = 0; state.lastCombatStage = 0; state.farmScanUntil = 0; state.farmScanStage = 0; state.retryAfter = 0; state.lobbyWaitUntil = 0; state.stoppedReason = '';
     lastRoomFingerprint = roomFingerprint();
     if (state.mode === 'full') {
-      // Khởi tạo chu kỳ khóa phòng; không gửi lời mời định kỳ.
-      if (!lastRoomRelockAt) lastRoomRelockAt = Date.now();
+      if (roomPlayerCount() > 0 && roomPlayerCount() < 5) { underfilledLobbySince = Date.now(); lastUnderfilledInviteAt = Date.now(); }
     }
     saveRunProgress();
     ui.elements.style.display = state.mode === 'grass' ? 'block' : 'none';
