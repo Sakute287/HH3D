@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Sakute
+// @name         Sakute 3.5.19
 // @namespace    hh3d.me-cung.automation
-// @version      3.5.18-panel-overlay-independent
-// @description  3.5.18: Auto chạy độc lập khi panel mở hoặc thu gọn
+// @version      3.5.19
+// @description  3.5.19: Perfect_Nightmare_Kim45Only
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -1024,9 +1024,9 @@
     if (/xác nhận đầu hàng/.test(t)) {
       // Farm: xác nhận đầu hàng để thoát lượt và quay về sảnh chạy vòng mới.
       if (state.mode === 'farm') return click(findClickable(/^xác nhận$/i), 'Farm: xác nhận đầu hàng');
-      // Perfect: chỉ tự xác nhận đầu hàng khi đang ở giai đoạn Ác mộng và boss hệ Kim.
-      if (state.mode === 'full' && state.perfectStage === 1 && currentBossElement() === 'Kim') {
-        return click(findClickable(/^xác nhận$/i), 'Perfect giai đoạn 1: xác nhận đầu hàng boss Kim');
+      // Perfect · Ác Mộng: chỉ xác nhận đầu hàng khi boss Kim ở ải 4 hoặc ải 5.
+      if (state.mode === 'full' && state.perfectStage === 1 && [4, 5].includes(currentStage()) && currentBossElement() === 'Kim') {
+        return click(findClickable(/^xác nhận$/i), `Perfect Ác Mộng ải ${currentStage()}: xác nhận đầu hàng boss Kim`);
       }
       // Chỉ xác nhận đầu hàng nếu chế độ Farm cỏ và boss sai hệ.
       if (state.mode === 'grass' && isCombat()) {
@@ -1239,18 +1239,18 @@
     const boss = currentBossElement();
     ui.stage.textContent = `${stage || '?'} / 5${boss ? ' · ' + boss : ''}`;
     if (state.mode === 'full') {
-      // Perfect giai đoạn 1: gặp boss Kim thì đầu hàng ngay; không đổi giai đoạn
-      // cho đến khi đã nhận rương chinh phục thành công.
-      if (state.perfectStage === 1 && boss === 'Kim') {
-        setStatus('Perfect · Ác mộng: gặp boss Kim, đầu hàng để thử lại');
+      // Perfect · Ác Mộng: chỉ đầu hàng nếu gặp boss Kim ở ải 4 hoặc ải 5.
+      // Không đầu hàng vì số người chết; các ải khác tiếp tục chiến đấu.
+      if (state.perfectStage === 1 && [4, 5].includes(stage) && boss === 'Kim') {
+        setStatus(`Perfect · Ác Mộng ải ${stage}: gặp boss Kim, đầu hàng để thử lại`);
         const abandon = findClickable(/đầu hàng/i);
         if (abandon) {
           const bodyText = getVisibleText().replace(norm(panel.innerText), '');
           if (/xác nhận đầu hàng/.test(bodyText)) {
             const confirm = findClickable(/^xác nhận$/i);
-            if (confirm) { click(confirm, 'Perfect giai đoạn 1: xác nhận đầu hàng boss Kim'); await sleep(500); }
+            if (confirm) { click(confirm, `Perfect Ác Mộng ải ${stage}: xác nhận đầu hàng boss Kim`); await sleep(500); }
           } else {
-            click(abandon, 'Perfect giai đoạn 1: đầu hàng ngay khi gặp boss Kim'); await sleep(500);
+            click(abandon, `Perfect Ác Mộng ải ${stage}: đầu hàng boss Kim`); await sleep(500);
           }
         }
         return;
@@ -1514,15 +1514,9 @@
 
   async function handleDeadPlayerRetreat() {
     const t = getVisibleText().replace(norm(panel.innerText), '');
-    const deadCount = countDeadPlayers();
-    const activeDifficulty = currentDifficulty() || state.difficulty || '';
-    const isNightmare = /ác mộng/i.test(activeDifficulty) || (state.mode === 'full' && state.perfectStage === 1);
-    if (!isNightmare && !state.deadRetreatPending) return false;
-    if (!state.deadRetreatPending && isNightmare && deadCount > 2 && isCombat()) {
-      state.deadRetreatPending = true;
-      setStatus(`Có ${deadCount} người đã chết (>2) · tự đầu hàng để thử lại`);
-      log(`Phát hiện ${deadCount} người đã chết; đầu hàng và quay về phòng để thử lại.`, 'warn');
-    }
+    // Đã bỏ cơ chế đầu hàng tự động theo số người chết.
+    // Perfect Ác Mộng chỉ xử lý đầu hàng boss Kim tại ải 4/5 trong handleCombat().
+    if (!state.deadRetreatPending) return false;
     if (!state.deadRetreatPending) return false;
 
     const confirm = findClickable(/^xác nhận$/i);
@@ -1597,7 +1591,7 @@
   async function tick() {
     if (!state.running || state.paused) return;
     ui.diff.textContent = currentDifficulty() || state.difficulty || 'Chưa xác định';
-    if (await handleDeadPlayerRetreat()) return;
+    state.deadRetreatPending = false;
     if (hasConfirmation()) {
       confirmIfNeeded();
       return;
