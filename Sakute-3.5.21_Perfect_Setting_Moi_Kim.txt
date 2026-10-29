@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Sakute
+// @name         Sakute 3.5.21
 // @namespace    hh3d.me-cung.automation
 // @version      3.5.21-perfect-settings-invite-kim-nightmare
 // @description  3.5.21: thêm Setting bật/tắt gửi lời mời và đầu hàng boss Kim ở Ác Mộng Perfect
