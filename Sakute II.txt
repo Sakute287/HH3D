@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Sakute II
+// @name         Sakute II 1.9
 // @namespace    hh3d.me-cung.automation
-// @version      3.6.5-one-chest-grass-chientich
-// @description  3.6.5: Cỏ/Chiến tích nhận 1 rương rồi chuyển giai đoạn; Farm theo số rương cài đặt; gửi lời mời theo miền hiện tại
+// @version      1.9-lobby-count-reset-stage1
+// @description  1.9: Reset GĐ1 khi tool kick hoặc thiếu người sau trận; chặn bắt đầu nếu chưa đủ số người tối thiểu
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -115,7 +115,8 @@
     seenStage: '', startedAt: 0, log: [], stoppedReason: '',
     farmElements: [['Kim'], ['Mộc'], ['Thủy'], ['Hỏa'], ['Thổ']],
     stageDone: new Set(), retryAfter: 0, lastStartAt: 0, lastCombatStage: 0, farmScanUntil: 0, farmScanStage: 0, perfectStage: 1, perfectStartStage: 1, perfectRewardHandled: false, perfectAdvancePending: false, deadRetreatPending: false, lobbyWaitUntil: 0,
-    perfectStage3ChestCount: 0, perfectStopAfterReturn: false, perfectKickIssued: false, perfectKickPending: false, farmKickSlot5Pending: false
+    perfectStage3ChestCount: 0, perfectStopAfterReturn: false, perfectKickIssued: false, perfectKickPending: false, farmKickSlot5Pending: false,
+    matchStartPlayerCount: 0, interruptionResetApplied: false
   };
   let lastRoomFingerprint = '';
   let panelOpen = true;
@@ -137,7 +138,8 @@
         seenStage: state.seenStage, lastAction: state.lastAction,
         lastActionAt: state.lastActionAt,
         perfectStage3ChestCount: state.perfectStage3ChestCount, perfectStopAfterReturn: state.perfectStopAfterReturn,
-        perfectKickIssued: state.perfectKickIssued, perfectKickPending: state.perfectKickPending, farmKickSlot5Pending: state.farmKickSlot5Pending
+        perfectKickIssued: state.perfectKickIssued, perfectKickPending: state.perfectKickPending, farmKickSlot5Pending: state.farmKickSlot5Pending,
+        matchStartPlayerCount: state.matchStartPlayerCount, interruptionResetApplied: state.interruptionResetApplied
       }));
     } catch (_) {}
   }
@@ -181,6 +183,8 @@
       state.perfectStage3ChestCount = clampInt(saved.perfectStage3ChestCount, 0, 5, 0);
       state.perfectStopAfterReturn = !!saved.perfectStopAfterReturn;
       state.perfectKickIssued = !!saved.perfectKickIssued; state.perfectKickPending = !!saved.perfectKickPending; state.farmKickSlot5Pending = !!saved.farmKickSlot5Pending;
+      state.matchStartPlayerCount = clampInt(saved.matchStartPlayerCount, 0, 5, 0);
+      state.interruptionResetApplied = !!saved.interruptionResetApplied;
       ui.mode.value = state.mode;
       $$('.mc-stage-elements[data-stage]', panel).forEach((box, i) => {
         const chosen = state.farmElements[i] || ['Kim'];
@@ -415,9 +419,11 @@
     }
     btn.click();
     state.farmKickSlot5Pending = false;
+    resetPlanToStage1('Tool tự trục xuất Slot 5 sau khi Farm');
+    lastRoomFingerprint = '';
     saveRunProgress();
-    log('Farm: đã gửi thao tác trục xuất Slot 5 sau khi nhận đủ rương.', 'warn');
-    setStatus('Farm: đã trục xuất Slot 5');
+    log('Farm: đã trục xuất Slot 5; đặt lại kế hoạch từ giai đoạn 1.', 'warn');
+    setStatus('Farm: đã trục xuất Slot 5 · quay lại giai đoạn 1');
     return true;
   }
 
@@ -443,7 +449,9 @@
       if (btn) {
         if (isProtectedRow(row)) { idleKickTracker.delete(row); continue; }
         btn.click(); idleKickTracker.delete(row);
-        log(`Đã trục xuất người chưa sẵn sàng sau ${roomSettings.idleKickSeconds}s.`, 'warn');
+        resetPlanToStage1('Tool tự trục xuất người chưa sẵn sàng');
+        lastRoomFingerprint = '';
+        log(`Đã trục xuất người chưa sẵn sàng sau ${roomSettings.idleKickSeconds}s; đặt lại kế hoạch từ giai đoạn 1.`, 'warn');
         return { unready, kicked: true };
       }
     }
@@ -1163,6 +1171,32 @@
     return false;
   }
 
+  function resetPlanToStage1(reason) {
+    if (!state.running || !Array.isArray(state.plan)) return;
+    let first = state.plan.findIndex(step => step && step.type !== 'skip');
+    if (first < 0) first = 0;
+    state.planIndex = first;
+    state.chestCount = 0;
+    state.difficultyApplied = false;
+    state.farmKickSlot5Pending = false;
+    state.matchStartPlayerCount = 0;
+    state.perfectRewardHandled = false;
+    state.stageDone.clear();
+    state.lastCombatStage = 0;
+    state.farmScanStage = 0;
+    state.farmScanUntil = 0;
+    const step = state.plan[first];
+    if (step && step.type !== 'skip') {
+      state.mode = step.type;
+      state.difficulty = step.difficulty;
+      if (ui.mode) ui.mode.value = step.type;
+    }
+    state.lobbyWaitUntil = Date.now() + 3000;
+    state.lastCombatRoster = '';
+    log(`${reason} · tự động quay lại giai đoạn ${first + 1}.`, 'warn');
+    saveRunProgress();
+  }
+
   async function handleLobby() {
     const lobbyCount = roomPlayerCount();
     if (state.running && lobbyCount > 0 && lobbyCount < 5) {
@@ -1172,11 +1206,23 @@
       }
     } else { underfilledLobbySince = 0; lastUnderfilledInviteAt = 0; }
     state.perfectRewardHandled = false;
+    // So sánh số người trước khi vào trận với số người khi quay lại sảnh.
+    // Chỉ xác nhận thành viên đã rời giữa trận khi số người hiện tại thấp hơn mốc ban đầu.
+    if (state.matchStartPlayerCount > 0 && lobbyCount > 0 && lobbyCount < state.matchStartPlayerCount) {
+      const before = state.matchStartPlayerCount;
+      state.matchStartPlayerCount = 0;
+      lastRoomFingerprint = roomFingerprint();
+      resetPlanToStage1(`Có người thoát giữa trận (${before} → ${lobbyCount} người)`);
+      if (lobbyCount < 5) await maybeSendInviteMessage(true, false, false);
+      return;
+    }
+    if (state.matchStartPlayerCount > 0 && lobbyCount >= state.matchStartPlayerCount) state.matchStartPlayerCount = 0;
     const fingerprint = roomFingerprint();
     if (fingerprint) {
-      if (lastRoomFingerprint && fingerprint !== lastRoomFingerprint && lobbyCount > 0 && lobbyCount < 5) {
+      if (lastRoomFingerprint && fingerprint !== lastRoomFingerprint && lobbyCount > 0 && !state.farmKickSlot5Pending) {
         lastRoomFingerprint = fingerprint;
-        await maybeSendInviteMessage(true, false, false);
+        resetPlanToStage1('Phát hiện thành viên rời phòng hoặc bị trục xuất');
+        if (lobbyCount < 5) await maybeSendInviteMessage(true, false, false);
         return;
       } else lastRoomFingerprint = fingerprint;
     }
@@ -1212,11 +1258,15 @@
     if (!start) { setStatus('Đang chờ giao diện sảnh hoặc nút Bắt đầu.'); state.retryAfter=Date.now()+2500; return; }
     const players = roomPlayerCount();
     const readiness = handleUnreadyPlayers(); if (readiness.kicked) return;
-    if (players > 0 && players < roomSettings.requiredPlayers) { setStatus(`Đợi đủ người: ${players}/${roomSettings.requiredPlayers}`); return; }
+    if (players < roomSettings.requiredPlayers) { setStatus(`Đợi đủ người: ${players}/${roomSettings.requiredPlayers} · tối thiểu ${roomSettings.requiredPlayers}`); return; }
     if (readiness.unready > 0) { setStatus(`Đợi ${readiness.unready} người sẵn sàng`); return; }
     const waitMs = 11001 - (Date.now() - state.lastStartAt);
     if (state.lastStartAt && waitMs > 0) { setStatus(`Chờ ${Math.ceil(waitMs/1000)}s trước lượt tiếp theo`); state.retryAfter=Date.now()+waitMs; return; }
+    // Lưu mốc số người ngay trước khi bắt đầu để phát hiện người thoát giữa trận.
+    state.matchStartPlayerCount = players;
+    state.interruptionResetApplied = false;
     state.lastStartAt=Date.now(); state.lobbyWaitUntil=0;
+    saveRunProgress();
     click(start, `Bắt đầu · Giai đoạn ${state.planIndex+1} · ${step.type} · ${step.difficulty}`);
     for (let attempt=0; attempt<5; attempt++) { await sleep(500); const t=getVisibleText().replace(norm(panel.innerText),''); if (/bắt đầu chinh phục mê cung/.test(t)) { const c=findClickable(/^xác nhận$/i); if(c) click(c,`Xác nhận bắt đầu giai đoạn ${state.planIndex+1}`); break; } }
     setStatus(`Đang vào ải · Giai đoạn ${state.planIndex+1}`); await sleep(900);
@@ -1387,8 +1437,10 @@
       if (returnButton) {
         click(returnButton, 'Quay về sảnh sau khi nhận rương chinh phục');
         await sleep(700);
-        if (state.planIndex >= state.plan.length) stop('Đã hoàn thành toàn bộ kế hoạch 3 giai đoạn');
-        else { state.lobbyWaitUntil=Date.now()+3000; state.perfectRewardHandled=false; syncActivePlanStep(); }
+        if (state.planIndex >= state.plan.length) {
+          resetPlanToStage1('Đã hoàn thành toàn bộ kế hoạch');
+          syncActivePlanStep();
+        } else { state.lobbyWaitUntil=Date.now()+3000; state.perfectRewardHandled=false; syncActivePlanStep(); }
         return;
       }
       setStatus('Đã nhận rương; chờ nút Quay về sảnh'); state.retryAfter=Date.now()+700; return;
@@ -1496,7 +1548,17 @@
     }
     if (isRewardScreen()) { await handleReward(); return; }
     if (await handleFarmEndState()) return;
-    if (isCombat()) { await handleCombat(); return; }
+    if (isCombat()) {
+      const battleText = norm(getVisibleText().replace(norm(panel.innerText), ''));
+      if (/(?:đã rời|vừa rời|thoát khỏi|bị trục xuất|đã thoát).{0,45}(?:phòng|trận|đội)|(?:phòng|trận|đội).{0,45}(?:đã rời|vừa rời|thoát khỏi|bị trục xuất|đã thoát)/i.test(battleText)) {
+        if (!state.interruptionResetApplied) {
+          state.interruptionResetApplied = true;
+          resetPlanToStage1('Có thành viên rời/thoát hoặc bị trục xuất giữa trận');
+        }
+      }
+      await handleCombat(); return;
+    }
+    state.interruptionResetApplied = false;
     await handleLobby();
   }
 
@@ -1571,6 +1633,8 @@
     state.seenStage = '';
     state.lastAction = '';
     state.lastActionAt = 0;
+    state.matchStartPlayerCount = 0;
+    state.interruptionResetApplied = false;
   }
 
   function stop(reason = 'Đã dừng theo yêu cầu') {
