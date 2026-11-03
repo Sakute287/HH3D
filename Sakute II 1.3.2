@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Sakute II 1.3.1
+// @name         Sakute II 1.3.2
 // @namespace    hh3d.me-cung.automation
-// @version      1.3.1-min-players-conditional-kick-settings
-// @description  1.3.1: Đưa số người tối thiểu ra ngoài Setting; ẩn điều kiện trục xuất và thiết lập phụ khi chưa bật
+// @version      1.3.2-min-players-conditional-kick-settings
+// @description  1.3.2: Nhận diện rương theo dòng Chinh Phục Mê Cung
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -1102,24 +1102,17 @@
     if (lobbyMarkers && !battleMarkers) return false;
     return battleMarkers || !!currentBossElement();
   }
+  function isConquestChestReady(text = '') {
+    const t = norm(text || getVisibleText().replace(norm(panel.innerText), ''));
+    // HH3D chỉ hiển thị màn hình/rương Chinh Phục Mê Cung sau khi vượt đủ cả 5 ải.
+    // Vì vậy dấu hiệu xác nhận chính xác là dòng tiêu đề "Chinh Phục Mê Cung";
+    // không bắt buộc DOM phải có thêm câu "Đội hình đã vượt qua 5 ải".
+    return /chinh phục mê cung/.test(t);
+  }
   function isRewardScreen() {
     const t = getVisibleText().replace(norm(panel.innerText), '');
-    if (state.mode === 'grass') {
-      // Sau khi nhận rương, trang có thể bỏ nhãn hoàn thành nhưng vẫn hiện trạng thái đã nhận.
-      // Nhận diện trạng thái đã nhận độc lập để bộ đếm kịp chuyển sang giai đoạn kế tiếp.
-      return /thưởng vật phẩm hôm nay đã nhận/.test(t) ||
-        (/bấm vào rương để nhận thưởng|bấm để mở rương|mở rương|nhận thưởng/.test(t) &&
-         /chinh phục mê cung|đội hình đã vượt qua 5 ải/.test(t));
-    }
-    // Chiến tích: màn hình rương chinh phục sẵn sàng đã đủ tính là nhận 1 rương.
-    // Không đợi thao tác mở rương hoặc dòng xác nhận sau đó.
-    if (state.mode === 'achievement') {
-      return /chinh phục mê cung/.test(t) && /rương đã sẵn sàng|bấm để mở rương|bấm vào rương để nhận thưởng/.test(t);
-    }
-    // Farm: ghi nhận ngay khi đã tới màn hình kết quả/rương của một lượt.
-    // Các dấu hiệu được giới hạn ở ngữ cảnh hoàn thành để tránh đếm chữ "phần thưởng"
-    // xuất hiện ở các khu vực giao diện khác.
-    return /thưởng vật phẩm hôm nay đã nhận|rương đã sẵn sàng|bấm để mở rương|bấm vào rương để nhận thưởng|nhận thưởng|rương.*(?:cuối|phần thưởng)|chúc mừng.*(?:hoàn thành|chiến thắng)|hoàn thành.*mê cung|đội hình đã vượt qua 5 ải|chinh phục mê cung|phần thưởng/.test(t);
+    // Mọi chế độ chỉ xử lý khi tiêu đề rương Chinh Phục Mê Cung xuất hiện (HH3D chỉ hiện sau 5 ải).
+    return isConquestChestReady(t);
   }
   function hasConfirmation() {
     const t = getVisibleText().replace(norm(panel.innerText), '');
@@ -1232,7 +1225,8 @@
         lastUnderfilledInviteAt = Date.now(); await maybeSendInviteMessage(true, false, false); return;
       }
     } else { underfilledLobbySince = 0; lastUnderfilledInviteAt = 0; }
-    state.perfectRewardHandled = false;
+    // Giữ latch nhận rương qua lúc quay về sảnh. Chỉ mở latch khi thực sự bắt đầu lượt mới,
+    // tránh một màn hình kết quả render lại làm đếm rương lần hai hoặc lặp giai đoạn.
     // So sánh số người trước khi vào trận với số người khi quay lại sảnh.
     // Chỉ xác nhận thành viên đã rời giữa trận khi số người hiện tại thấp hơn mốc ban đầu.
     if (state.matchStartPlayerCount > 0 && lobbyCount > 0 && lobbyCount < state.matchStartPlayerCount) {
@@ -1299,6 +1293,8 @@
     // Lưu mốc số người ngay trước khi bắt đầu để phát hiện người thoát giữa trận.
     state.matchStartPlayerCount = players;
     state.interruptionResetApplied = false;
+    // Một lượt mê cung mới bắt đầu: cho phép ghi nhận đúng một rương của lượt này.
+    state.perfectRewardHandled = false;
     state.lastStartAt=Date.now(); state.lobbyWaitUntil=0;
     saveRunProgress();
     click(start, `Bắt đầu · Giai đoạn ${state.planIndex+1} · ${step.type} · ${step.difficulty}`);
@@ -1428,16 +1424,12 @@
 
   async function handleReward() {
     const t = getVisibleText().replace(norm(panel.innerText), '');
-    setStatus(`Giai đoạn ${state.planIndex+1}: xử lý rương chinh phục`);
-    const chestReady = state.mode === 'achievement' && /chinh phục mê cung/.test(t) &&
-      /rương đã sẵn sàng|bấm để mở rương|bấm vào rương để nhận thưởng/.test(t);
-    // Với Chiến tích, chỉ cần thấy màn hình rương chinh phục sẵn sàng là tính đã nhận rương.
-    const farmChestReady = state.mode === 'farm' && (
-      /thưởng vật phẩm hôm nay đã nhận|rương đã sẵn sàng|bấm để mở rương|bấm vào rương để nhận thưởng/.test(t) ||
-      (/chúc mừng.*(?:hoàn thành|chiến thắng)|đội hình đã vượt qua 5 ải|hoàn thành.*mê cung/.test(t) && /rương|thưởng|chinh phục/.test(t))
-    );
-    const received = /thưởng vật phẩm hôm nay đã nhận/.test(t) || chestReady || farmChestReady;
-    const completed = /đội hình đã vượt qua 5 ải|chinh phục mê cung|hoàn thành.*mê cung/.test(t);
+    setStatus(`Giai đoạn ${state.planIndex+1}: chờ rương Chinh phục mê cung`);
+    // Không tính ở màn hình thắng chung hoặc thông báo thưởng khác.
+    // Tiêu đề "Chinh Phục Mê Cung" là dấu hiệu rương hợp lệ; game chỉ hiển thị sau đủ 5 ải.
+    const received = isConquestChestReady(t);
+    const chestVisible = /chinh phục mê cung/.test(t);
+    const completed = chestVisible;
     const returnButton = findClickable(/quay về sảnh|về sảnh|trở về sảnh/i);
     const chest = findClickable(/bấm vào rương để nhận thưởng|bấm để mở rương|mở rương|nhận thưởng/i);
     // Dòng 'đã nhận thưởng' là tín hiệu xác nhận rương đã được nhận. Không bắt buộc
@@ -1476,14 +1468,14 @@
           state.planCompletedAwaitingKick = true;
           state.lobbyWaitUntil = 0;
           saveRunProgress();
-        } else { state.lobbyWaitUntil=Date.now()+3000; state.perfectRewardHandled=false; syncActivePlanStep(); }
+        } else { state.lobbyWaitUntil=Date.now()+3000; syncActivePlanStep(); }
         return;
       }
       setStatus('Đã nhận rương; chờ nút Quay về sảnh'); state.retryAfter=Date.now()+700; return;
     }
-    if (completed && chest && state.mode !== 'achievement') { click(chest, 'Mở/nhận rương chinh phục'); await sleep(700); return; }
-    if (returnButton && /rương|thưởng|hoàn thành|chinh phục/.test(t)) { click(returnButton,'Quay về sảnh sau màn thưởng'); await sleep(700); return; }
-    setStatus('Chờ xác nhận nhận rương chinh phục'); state.retryAfter=Date.now()+1000;
+    if (completed && chestVisible && chest) { click(chest, 'Mở/nhận rương Chinh phục mê cung'); await sleep(700); return; }
+    if (returnButton && completed && chestVisible) { click(returnButton,'Quay về sảnh sau rương Chinh phục mê cung'); await sleep(700); return; }
+    setStatus('Chờ đủ 5 ải và rương Chinh phục mê cung xuất hiện'); state.retryAfter=Date.now()+1000;
   }
 
   function countDeadPlayers() {
