@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Sakute II 1.3.3
+// @name         Sakute II 1.3.5
 // @namespace    hh3d.me-cung.automation
-// @version      1.3.4-invite-flow-rework
-// @description  1.3.4: Làm mới cơ chế lấy và gửi lời mời khi phòng khóa
+// @version      1.3.5-invite-flow-rework
+// @description  1.3.5: Làm mới cơ chế lấy và gửi lời mời khi phòng khóa
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
