@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Sakute II 1.3.5
+// @name         Sakute II 1.3.6
 // @namespace    hh3d.me-cung.automation
-// @version      1.3.5-invite-flow-rework
-// @description  1.3.5: Làm mới cơ chế lấy và gửi lời mời khi phòng khóa
+// @version      1.3.6-invite-flow-rework
+// @description  1.3.6: Làm mới cơ chế lấy và gửi lời mời khi phòng khóa
 // @include      https://hoathinh3d.*/me-cung*
 // @run-at       document-idle
 // @grant        none
@@ -1524,17 +1524,25 @@
         }
         saveRunProgress();
       }
+      // Nếu nút quay về sảnh đã xuất hiện thì bấm ngay; không giữ tiến trình
+      // chỉ để chờ nút này xuất hiện.
       if (returnButton) {
         click(returnButton, 'Quay về sảnh sau khi nhận rương chinh phục');
         await sleep(700);
-        if (state.planIndex >= state.plan.length) {
-          state.planCompletedAwaitingKick = true;
-          state.lobbyWaitUntil = 0;
-          saveRunProgress();
-        } else { state.lobbyWaitUntil=Date.now()+3000; syncActivePlanStep(); }
-        return;
       }
-      setStatus('Đã nhận rương; chờ nút Quay về sảnh'); state.retryAfter=Date.now()+700; return;
+      if (state.planIndex >= state.plan.length) {
+        state.planCompletedAwaitingKick = true;
+        state.lobbyWaitUntil = 0;
+        saveRunProgress();
+      } else {
+        state.lobbyWaitUntil = Date.now() + 1000;
+        syncActivePlanStep();
+      }
+      setStatus(returnButton
+        ? 'Đã nhận rương; chuyển tiếp khỏi màn hình thưởng'
+        : 'Đã nhận rương; không chờ nút Quay về sảnh');
+      state.retryAfter = Date.now() + 1000;
+      return;
     }
     if (completed && chestVisible && chest) { click(chest, 'Mở/nhận rương Chinh phục mê cung'); await sleep(700); return; }
     if (returnButton && completed && chestVisible) { click(returnButton,'Quay về sảnh sau rương Chinh phục mê cung'); await sleep(700); return; }
